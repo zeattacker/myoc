@@ -356,8 +356,8 @@ export type ToolsConfig = {
     search?: {
       /** Enable web search tool (default: true when API key is present). */
       enabled?: boolean;
-      /** Search provider ("brave", "perplexity", or "grok"). */
-      provider?: "brave" | "perplexity" | "grok";
+      /** Search provider ("brave", "perplexity", "grok", or "searxng"). */
+      provider?: "brave" | "perplexity" | "grok" | "searxng";
       /** Brave Search API key (optional; defaults to BRAVE_API_KEY env var). */
       apiKey?: string;
       /** Default search results count (1-10). */
@@ -374,6 +374,11 @@ export type ToolsConfig = {
         baseUrl?: string;
         /** Model to use (defaults to "perplexity/sonar-pro"). */
         model?: string;
+      };
+      /** SearXNG-specific configuration (used when provider="searxng"). */
+      searxng?: {
+        /** SearXNG instance URL (defaults to SEARXNG_URL env var or http://localhost:8888). */
+        url?: string;
       };
       /** Grok-specific configuration (used when provider="grok"). */
       grok?: {
