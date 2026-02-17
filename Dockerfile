@@ -59,7 +59,10 @@ USER node
 # Setup npm global prefix for non-root skill/MCP installs
 RUN mkdir -p /home/node/.npm-global && \
     npm config set prefix /home/node/.npm-global
-ENV PATH="/home/node/.npm-global/bin:/home/node/.local/bin:${PATH}"
+ENV PATH="/home/node/.lucid/bin:/home/node/.lucid/bun/bin:/home/node/.npm-global/bin:/home/node/.local/bin:${PATH}"
+
+# Install skill dependencies: Bitwarden CLI (vaultwarden skill), MCPorter (mcporter skill)
+RUN npm install -g @bitwarden/cli mcporter
 
 # Install Python packages for skills (duckduckgo-search for web search)
 RUN pip install --break-system-packages --no-cache-dir duckduckgo-search
