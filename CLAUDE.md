@@ -13,27 +13,29 @@ To pull upstream updates: `git fetch upstream && git merge upstream/main`
 
 ## Build & Development Commands
 
-| Command | Purpose |
-|---------|---------|
-| `pnpm install` | Install dependencies (uses pnpm 10.x, lockfile enforced) |
-| `pnpm build` | Full production build (tsdown → `dist/`) |
-| `pnpm dev` | Run in dev mode |
-| `pnpm check` | Run format check + typecheck + lint (all-in-one quality gate) |
-| `pnpm lint` | Oxlint with `--type-aware` |
-| `pnpm lint:fix` | Auto-fix lint + format |
-| `pnpm format` | Format with oxfmt |
-| `pnpm test` | Run all tests (custom parallel runner) |
-| `pnpm test:fast` | Unit tests only (vitest, excludes gateway/extensions) |
-| `pnpm test:e2e` | End-to-end tests |
-| `pnpm test:coverage` | Unit tests with V8 coverage |
-| `pnpm test:watch` | Vitest in watch mode |
+| Command              | Purpose                                                       |
+| -------------------- | ------------------------------------------------------------- |
+| `pnpm install`       | Install dependencies (uses pnpm 10.x, lockfile enforced)      |
+| `pnpm build`         | Full production build (tsdown → `dist/`)                      |
+| `pnpm dev`           | Run in dev mode                                               |
+| `pnpm check`         | Run format check + typecheck + lint (all-in-one quality gate) |
+| `pnpm lint`          | Oxlint with `--type-aware`                                    |
+| `pnpm lint:fix`      | Auto-fix lint + format                                        |
+| `pnpm format`        | Format with oxfmt                                             |
+| `pnpm test`          | Run all tests (custom parallel runner)                        |
+| `pnpm test:fast`     | Unit tests only (vitest, excludes gateway/extensions)         |
+| `pnpm test:e2e`      | End-to-end tests                                              |
+| `pnpm test:coverage` | Unit tests with V8 coverage                                   |
+| `pnpm test:watch`    | Vitest in watch mode                                          |
 
 **Run a single test file:**
+
 ```bash
 pnpm exec vitest run src/path/to/file.test.ts
 ```
 
 **Docker image build & deploy:**
+
 ```bash
 docker build -t openclaw:local .
 docker compose up -d openclaw-gateway
@@ -77,6 +79,18 @@ Markdown-driven workflows in `skills/` — auto-discovered from `~/.openclaw/ski
 
 Lit-based web UI in `ui/` (separate workspace package). Build with `pnpm ui:build`, dev with `pnpm ui:dev`.
 
+## Centralized Utilities (Never Duplicate)
+
+Search before creating. Key utilities already exist:
+
+- **Time formatting**: `src/infra/format-time` — `formatAge()`, `formatDuration()` (never write local versions)
+- **Terminal output**: `src/terminal/table.ts` (`renderTable`), `src/terminal/theme.ts` (`theme.success/muted`), `src/cli/progress.ts` (spinners)
+- **Error formatting**: `src/infra/errors.ts` — `formatErrorMessage()` redacts sensitive data before output; always use it
+- **Logging redaction**: `src/logging/redact.ts` — always redact before logging external-facing errors
+- **CLI commands** go in `src/commands/`, CLI options in `src/cli/`, DI via `createDefaultDeps()`
+
+Import directly from the source module — avoid re-export files.
+
 ## Coding Conventions
 
 - **TypeScript ESM** with strict typing. Use `.js` extensions in imports. Use `import type` for type-only imports.
@@ -109,3 +123,9 @@ Environment configured via `.env` file. Key vars: `OPENCLAW_GATEWAY_TOKEN`, `OPE
 - Patched dependencies (`pnpm.patchedDependencies`) must use exact versions (no `^`/`~`).
 - Patching dependencies requires explicit approval.
 - Do not set test workers above 16.
+- Extension packages: never use `workspace:*` in `dependencies` (only `devDependencies`/`peerDependencies`) — breaks npm install for published extensions.
+- `openclaw.json` does not support `${VAR}` interpolation — use `tokenFile` or literal values.
+
+## Requirements
+
+- Node.js ≥ 22.12.0
