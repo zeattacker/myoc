@@ -392,6 +392,12 @@ export function attachGatewayWsMessageHandler(params: {
         const sharedAuthOk =
           sharedAuthResult?.ok === true &&
           (sharedAuthResult.method === "token" || sharedAuthResult.method === "password");
+        // Allow token-authenticated backend clients (e.g. mission-control) to keep their
+        // requested scopes without device identity.  Gated on: known gateway-client id + valid
+        // shared-secret token.  The shared token acts as the authorization credential — if you
+        // know it, you have operator access (same as device-paired clients).
+        const isGatewayClient = connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT;
+        const allowGatewayClientBypass = isGatewayClient && sharedAuthOk;
         const rejectUnauthorized = (failedAuth: GatewayAuthResult) => {
           setHandshakeState("failed");
           logWsControl.warn(
@@ -427,7 +433,7 @@ export function attachGatewayWsMessageHandler(params: {
           close(1008, truncateCloseReason(authMessage));
         };
         if (!device) {
-          if (scopes.length > 0 && !allowControlUiBypass) {
+          if (scopes.length > 0 && !allowControlUiBypass && !allowGatewayClientBypass) {
             scopes = [];
             connectParams.scopes = scopes;
           }

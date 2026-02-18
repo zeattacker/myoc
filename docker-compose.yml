@@ -9,6 +9,7 @@ services:
       CLAUDE_WEB_SESSION_KEY: ${CLAUDE_WEB_SESSION_KEY}
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE}
       KIMI_BOT_TOKEN: ${KIMI_BOT_TOKEN:-}
+      MC_SERVER_URL: http://mission-control:8001
       LUCID_EMBEDDING_URL: http://host.docker.internal:1234/v1
       LUCID_EMBEDDING_MODEL: text-embedding-bge-m3
     volumes:
@@ -42,15 +43,19 @@ services:
       dockerfile: Dockerfile
     ports:
       - "${MISSION_CONTROL_PORT:-8080}:8080"
+      - "${PLAN_API_PORT:-8001}:8001"
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/nvidia/.openclaw:ro
       - ${OPENCLAW_WORKSPACE_DIR}:/home/nvidia/.openclaw/workspace  # writable for edit
       - ~/.lucid:/home/nvidia/.lucid:ro                              # Lucid memory DB
     environment:
       - OPENCLAW_GATEWAY_URL=http://openclaw-gateway:18789
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
       - OPENCLAW_TASKS_DIR=/home/nvidia/.openclaw/workspace
       - OPENCLAW_AGENTS_DIR=/home/nvidia/.openclaw/agents
       - LUCID_DB_PATH=/home/nvidia/.lucid/memory.db
+      - PLAN_FILE=/home/nvidia/.openclaw/workspace/plan.json
+      - PLAN_MEMORY_DIR=/home/nvidia/.openclaw/workspace/plan_memory
     depends_on:
       - openclaw-gateway
     restart: unless-stopped
