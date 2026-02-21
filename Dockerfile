@@ -77,8 +77,9 @@ ENV PATH="/home/node/.lucid/bin:/home/node/.lucid/bun/bin:/home/node/.npm-global
 # Install skill dependencies: Bitwarden CLI (vaultwarden skill), MCPorter (mcporter skill)
 RUN npm install -g @bitwarden/cli mcporter
 
-# Install Python packages for skills (duckduckgo-search for web search)
-RUN pip install --break-system-packages --no-cache-dir duckduckgo-search
+# Install Python packages for skills
+# pypdf: PDF text extraction (gamatecha-workspace skill — Drive report summarization)
+RUN pip install --break-system-packages --no-cache-dir pypdf
 
 # Start gateway server with default config.
 # Binds to loopback (127.0.0.1) by default for security.

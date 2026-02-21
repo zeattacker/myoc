@@ -11,9 +11,13 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       KIMI_BOT_TOKEN: ${KIMI_BOT_TOKEN:-}
       MC_SERVER_URL: http://mission-control:8001
-      LUCID_EMBEDDING_URL: http://host.docker.internal:1234/v1
-      LUCID_EMBEDDING_MODEL: text-embedding-bge-m3
+      LUCID_EMBEDDING_URL: http://host.docker.internal:8000/v1
+      LUCID_EMBEDDING_MODEL: BAAI/bge-m3
+      GOG_KEYRING_PASSWORD: openclaw-gog-keyring
+      GOG_ACCOUNT: finance@gamatecha.com
+      PATH: /home/node/.openclaw/bin:/home/node/.lucid/bin:/home/node/.lucid/bun/bin:/home/node/.npm-global/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
+      - ~/.config/gogcli:/home/node/.config/gogcli
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
       - /var/run/docker.sock:/var/run/docker.sock
