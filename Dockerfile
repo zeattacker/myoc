@@ -1,27 +1,60 @@
-FROM node:22-bookworm@sha256:cd7bcd2e7a1e6f72052feb023c7f6b722205d3fcab7bbcbd2d1bfdab10b1e935
+# Ubuntu 24.04 Noble — glibc 2.39, GCC 13 (CXXABI_1.3.15)
+# Required for Lucid native module (lucid-native.linux-arm64-gnu.node)
+FROM ubuntu:24.04
 
 # Install Bun (required for build scripts)
-RUN curl -fsSL https://bun.sh/install | bash
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl unzip && \
+    curl -fsSL https://bun.sh/install | bash && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 ENV PATH="/root/.bun/bin:${PATH}"
 
+# Install Node.js 22.x from NodeSource + corepack
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+      | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+      > /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update && \
+    apt-get install -y nodejs && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 RUN corepack enable
+
+# Create node user (uid 1000) — same as official node Docker image
+# Ubuntu 24.04 may already have uid/gid 1000 used by 'ubuntu' user — rename it
+RUN if getent passwd 1000 > /dev/null 2>&1; then \
+      usermod -l node -d /home/node -m $(getent passwd 1000 | cut -d: -f1) && \
+      groupmod -n node $(getent group 1000 | cut -d: -f1) 2>/dev/null || true; \
+    else \
+      groupadd --gid 1000 node && \
+      useradd --uid 1000 --gid 1000 --shell /bin/bash --create-home node; \
+    fi
 
 WORKDIR /app
 
 ARG OPENCLAW_DOCKER_APT_PACKAGES=""
-# Install Docker CLI from official Docker repository for latest version
+# Install system packages + Docker CLI (ubuntu/noble repo)
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       python3-pip \
+      python3 \
       sudo \
       ca-certificates \
       curl \
       gnupg \
+      git \
       $OPENCLAW_DOCKER_APT_PACKAGES && \
     install -m 0755 -d /etc/apt/keyrings && \
-    curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" \
+      > /etc/apt/sources.list.d/docker.list && \
     apt-get update && \
     apt-get install -y docker-ce-cli && \
     apt-get clean && \
@@ -65,8 +98,6 @@ RUN groupadd -g 999 docker || true && \
     echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
 # Security hardening: Run as non-root user
-# The node:22-bookworm image includes a 'node' user (uid 1000)
-# This reduces the attack surface by preventing container escape via root privileges
 USER node
 
 # Setup npm global prefix for non-root skill/MCP installs
