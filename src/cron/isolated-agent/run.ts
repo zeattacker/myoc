@@ -748,6 +748,10 @@ export async function runCronIsolatedAgentTurn(params: {
           endedAt: runEndedAt,
           outcome: { status: "ok" },
           announceType: "cron job",
+          // When a specific delivery target is configured, skip the extra LLM
+          // reformatting turn and send the already-formatted cron output directly
+          // to the channel via method:"send". Avoids 15s announce timeout.
+          expectsCompletionMessage: Boolean(resolvedDelivery.to),
         });
         if (didAnnounce) {
           delivered = true;
