@@ -816,7 +816,7 @@ export function attachGatewayWsMessageHandler(params: {
               }
 
               const pairedScopes = Array.isArray(paired.scopes) ? paired.scopes : [];
-              if (scopes.length > 0) {
+              if (scopes.length > 0 && !allowGatewayClientBypass) {
                 if (pairedScopes.length === 0) {
                   logUpgradeAudit("scope-upgrade", pairedRoles, pairedScopes);
                   const ok = await requirePairing("scope-upgrade");
