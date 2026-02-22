@@ -49,6 +49,7 @@ RUN apt-get update && \
       curl \
       gnupg \
       git \
+      openssh-client \
       $OPENCLAW_DOCKER_APT_PACKAGES && \
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
