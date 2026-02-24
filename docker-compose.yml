@@ -66,6 +66,34 @@ services:
       - openclaw-gateway
     restart: unless-stopped
 
+  qmd:
+    build:
+      context: ~/Documents/Projects/qmd
+      dockerfile: /home/nvidia/Documents/Projects/openclaw/openclaw-docker/qmd/Dockerfile
+      additional_contexts:
+        llama_src: ~/Documents/Projects/llm/llcp/llama.cpp
+    environment:
+      HOME: /data
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR}/qmd/cache:/data
+      - ${OPENCLAW_CONFIG_DIR}/qmd/collections:/collections
+      - ${OPENCLAW_WORKSPACE_DIR}/memory:/collections/workspace-memory:ro
+    ports:
+      - "8282:8282"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8282/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
     environment:
