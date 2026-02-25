@@ -1,8 +1,8 @@
 import { Type } from "@sinclair/typebox";
 import { formatCliCommand } from "../../cli/command-format.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { logVerbose } from "../../globals.js";
 import { fetchWithSsrFGuard } from "../../infra/net/fetch-guard.js";
-import { defaultRuntime } from "../../runtime.js";
 import { wrapWebContent } from "../../security/external-content.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import type { AnyAgentTool } from "./common.js";
@@ -372,7 +372,7 @@ function resolveSearchProvider(search?: WebSearchConfig): (typeof SEARCH_PROVIDE
   if (raw === "") {
     // 1. Brave
     if (resolveSearchApiKey(search)) {
-      defaultRuntime.log(
+      logVerbose(
         'web_search: no provider configured, auto-detected "brave" from available API keys',
       );
       return "brave";
@@ -380,7 +380,7 @@ function resolveSearchProvider(search?: WebSearchConfig): (typeof SEARCH_PROVIDE
     // 2. Gemini
     const geminiConfig = resolveGeminiConfig(search);
     if (resolveGeminiApiKey(geminiConfig)) {
-      defaultRuntime.log(
+      logVerbose(
         'web_search: no provider configured, auto-detected "gemini" from available API keys',
       );
       return "gemini";
@@ -388,7 +388,7 @@ function resolveSearchProvider(search?: WebSearchConfig): (typeof SEARCH_PROVIDE
     // 3. Kimi
     const kimiConfig = resolveKimiConfig(search);
     if (resolveKimiApiKey(kimiConfig)) {
-      defaultRuntime.log(
+      logVerbose(
         'web_search: no provider configured, auto-detected "kimi" from available API keys',
       );
       return "kimi";
@@ -397,7 +397,7 @@ function resolveSearchProvider(search?: WebSearchConfig): (typeof SEARCH_PROVIDE
     const perplexityConfig = resolvePerplexityConfig(search);
     const { apiKey: perplexityKey } = resolvePerplexityApiKey(perplexityConfig);
     if (perplexityKey) {
-      defaultRuntime.log(
+      logVerbose(
         'web_search: no provider configured, auto-detected "perplexity" from available API keys',
       );
       return "perplexity";
@@ -405,7 +405,7 @@ function resolveSearchProvider(search?: WebSearchConfig): (typeof SEARCH_PROVIDE
     // 5. Grok
     const grokConfig = resolveGrokConfig(search);
     if (resolveGrokApiKey(grokConfig)) {
-      defaultRuntime.log(
+      logVerbose(
         'web_search: no provider configured, auto-detected "grok" from available API keys',
       );
       return "grok";
