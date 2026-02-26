@@ -23,12 +23,16 @@ services:
       - ~/.config/gogcli:/home/node/.config/gogcli
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
+      - ${OPENCLAW_CONFIG_DIR}/ssh:/home/node/.ssh
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.lucid:/home/node/.lucid
       - ~/Documents/Projects/oc-skills:/home/nvidia/Documents/Projects/oc-skills:ro
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
       - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     extra_hosts:
       - "host.docker.internal:host-gateway"
     group_add:
