@@ -158,6 +158,19 @@
 
 - Rebrand/migration issues or legacy config/service warnings: run `openclaw doctor` (see `docs/gateway/doctor.md`).
 
+## Memory Search
+
+Before answering questions about prior work, decisions, or past conversations, always query QMD first:
+
+1. **Primary — `qmd query` (hybrid lex + vec, best for natural-language questions):**
+   - `qmd query "what was decided about X" -c workspace` — files, docs, code notes
+   - `qmd query "conversation about Y" -c sessions` — past conversations
+2. **Fallback — `qmd search` for quick exact-term or keyword lookups:**
+   - `qmd search "SpecificClassName" -c workspace`
+3. **Retrieve a specific file by path:** `qmd get "<path>"`
+
+Prefer `qmd query` over `qmd search` — it uses hybrid (lexical + vector) search and consistently returns better results for natural-language recall. Use `qmd search` only when you need exact-term matching or `qmd query` returns too many unrelated results.
+
 ## Agent-Specific Notes
 
 - Vocabulary: "makeup" = "mac app".
