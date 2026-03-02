@@ -1,5 +1,10 @@
 services:
   openclaw-gateway:
+    build:
+      context: .
+      additional_contexts:
+        qmd_src: ~/Documents/Projects/qmd
+        llama_src: ~/Documents/Projects/llm/llcp/llama.cpp
     image: ${OPENCLAW_IMAGE:-openclaw:local}
     environment:
       HOME: /home/node
@@ -11,22 +16,29 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       KIMI_BOT_TOKEN: ${KIMI_BOT_TOKEN:-}
       MC_SERVER_URL: http://mission-control:8001
-      LUCID_EMBEDDING_URL: http://host.docker.internal:8000/v1
-      LUCID_EMBEDDING_MODEL: BAAI/bge-m3
-      LUCID_HTTP_PORT: "7384"
       GOG_KEYRING_PASSWORD: openclaw-gog-keyring
       GOG_ACCOUNT: finance@gamatecha.com
-      PATH: /home/node/.openclaw/bin:/home/node/.lucid/bin:/home/node/.lucid/bun/bin:/home/node/.npm-global/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      # Enable Lucid native Rust module (safe on Ubuntu 24.04 / glibc 2.39+)
-      LUCID_FORCE_NATIVE: "1"
+      PATH: /home/node/.openclaw/bin:/home/node/.npm-global/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # Lobster workflow shell env vars
+      CLAWD_URL: "http://127.0.0.1:18789"
+      CLAWD_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      LOBSTER_STATE_DIR: /home/node/.openclaw/workspace/lobster-state
     volumes:
       - ~/.config/gogcli:/home/node/.config/gogcli
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
       - ${OPENCLAW_CONFIG_DIR}/ssh:/home/node/.ssh
       - /var/run/docker.sock:/var/run/docker.sock
-      - ~/.lucid:/home/node/.lucid
       - ~/Documents/Projects/oc-skills:/home/nvidia/Documents/Projects/oc-skills:ro
+      # QMD model cache — persists GGUF models across container recreates
+      - ${OPENCLAW_CONFIG_DIR}/qmd/cache/.cache/qmd/models:/home/node/.cache/qmd/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
       - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
@@ -39,12 +51,11 @@ services:
       - "988" # Host docker group GID for docker socket access
     init: true
     restart: unless-stopped
-    # Start Lucid HTTP MCP server (port 7384) inside container alongside OpenClaw gateway.
-    # Lucid runs in-container so hook connects via localhost instead of host.docker.internal.
     command:
       [
-        "bash", "-c",
-        "bun run /home/node/.lucid/server/src/server.ts & node dist/index.js gateway --bind ${OPENCLAW_GATEWAY_BIND:-lan} --port 18789"
+        "node", "dist/index.js", "gateway",
+        "--bind", "${OPENCLAW_GATEWAY_BIND:-lan}",
+        "--port", "18789"
       ]
 
   mission-control:
@@ -57,43 +68,31 @@ services:
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/nvidia/.openclaw:ro
       - ${OPENCLAW_WORKSPACE_DIR}:/home/nvidia/.openclaw/workspace  # writable for edit
-      - ~/.lucid:/home/nvidia/.lucid:ro                              # Lucid memory DB
     environment:
       - OPENCLAW_GATEWAY_URL=http://openclaw-gateway:18789
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
       - OPENCLAW_TASKS_DIR=/home/nvidia/.openclaw/workspace
       - OPENCLAW_AGENTS_DIR=/home/nvidia/.openclaw/agents
-      - LUCID_DB_PATH=/home/nvidia/.lucid/memory.db
       - PLAN_FILE=/home/nvidia/.openclaw/workspace/plan.json
       - PLAN_MEMORY_DIR=/home/nvidia/.openclaw/workspace/plan_memory
     depends_on:
       - openclaw-gateway
     restart: unless-stopped
 
-  qmd:
-    build:
-      context: ~/Documents/Projects/qmd
-      dockerfile: /home/nvidia/Documents/Projects/openclaw/openclaw-docker/qmd/Dockerfile
-      additional_contexts:
-        llama_src: ~/Documents/Projects/llm/llcp/llama.cpp
+  pinchtab:
+    image: pinchtab/pinchtab
+    security_opt:
+      - seccomp:unconfined
     environment:
-      HOME: /data
+      BRIDGE_TOKEN: ${PINCHTAB_TOKEN:-}
+      BRIDGE_BLOCK_ADS: "true"
     volumes:
-      - ${OPENCLAW_CONFIG_DIR}/qmd/cache:/data
-      - ${OPENCLAW_CONFIG_DIR}/qmd/collections:/collections
-      - ${OPENCLAW_WORKSPACE_DIR}/memory:/collections/workspace-memory:ro
+      - ${OPENCLAW_CONFIG_DIR}/pinchtab:/root/.pinchtab
     ports:
-      - "8282:8282"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+      - "9867:9867"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8282/health"]
+      test: ["CMD", "wget", "-qO-", "--header=Authorization: Bearer ${PINCHTAB_TOKEN}", "http://localhost:9867/health"]
       interval: 30s
       timeout: 10s
       retries: 3

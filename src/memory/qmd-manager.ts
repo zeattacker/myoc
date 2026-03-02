@@ -30,6 +30,7 @@ import type {
   ResolvedQmdConfig,
   ResolvedQmdMcporterConfig,
 } from "./backend-config.js";
+import { acquireAgentDaemonPort, QmdDaemon } from "./qmd-daemon.js";
 import { parseQmdQueryJson, type QmdQueryResult } from "./qmd-query-parser.js";
 import { extractKeywords } from "./query-expansion.js";
 
@@ -181,6 +182,7 @@ export class QmdMemoryManager implements MemorySearchManager {
   >();
   private readonly maxQmdOutputChars = MAX_QMD_OUTPUT_CHARS;
   private readonly sessionExporter: SessionExporterConfig | null;
+  private readonly _daemon: QmdDaemon | null;
   private updateTimer: NodeJS.Timeout | null = null;
   private pendingUpdate: Promise<void> | null = null;
   private queuedForcedUpdate: Promise<void> | null = null;
@@ -228,6 +230,20 @@ export class QmdMemoryManager implements MemorySearchManager {
           collectionName: this.pickSessionCollectionName(),
         }
       : null;
+
+    if (this.qmd.daemon.enabled) {
+      const daemonPort = acquireAgentDaemonPort(params.agentId, this.qmd.daemon.port);
+      this._daemon = new QmdDaemon({
+        command: resolveWindowsCommandShim(this.qmd.command),
+        port: daemonPort,
+        idleTimeoutMs: this.qmd.daemon.idleTimeoutMs,
+        coldStartTimeoutMs: this.qmd.daemon.coldStartTimeoutMs,
+        warmTimeoutMs: this.qmd.daemon.warmTimeoutMs,
+        env: this.env,
+      });
+    } else {
+      this._daemon = null;
+    }
     if (this.sessionExporter) {
       this.qmd.collections = [
         ...this.qmd.collections,
@@ -707,14 +723,33 @@ export class QmdMemoryManager implements MemorySearchManager {
       }
     };
 
-    let parsed: QmdQueryResult[];
-    try {
-      parsed = await runSearchAttempt(true);
-    } catch (err) {
-      if (!(await this.tryRepairMissingCollectionSearch(err))) {
-        throw err instanceof Error ? err : new Error(String(err));
+    // Daemon path: for GPU modes, try the warm persistent process first.
+    // If it fails for any reason, fall through to the standard CLI path.
+    let parsed: QmdQueryResult[] = [];
+    let daemonSearched = false;
+    if (this._daemon && (qmdSearchCommand === "vsearch" || qmdSearchCommand === "query")) {
+      try {
+        parsed = await this.runQmdSearchViaDaemon(
+          trimmed,
+          limit,
+          collectionNames,
+          qmdSearchCommand,
+          opts?.minScore ?? 0,
+        );
+        daemonSearched = true;
+      } catch (err) {
+        log.warn(`qmd daemon search failed, falling back to CLI: ${String(err)}`);
       }
-      parsed = await runSearchAttempt(false);
+    }
+    if (!daemonSearched) {
+      try {
+        parsed = await runSearchAttempt(true);
+      } catch (err) {
+        if (!(await this.tryRepairMissingCollectionSearch(err))) {
+          throw err instanceof Error ? err : new Error(String(err));
+        }
+        parsed = await runSearchAttempt(false);
+      }
     }
     const results: MemorySearchResult[] = [];
     for (const entry of parsed) {
@@ -853,6 +888,7 @@ export class QmdMemoryManager implements MemorySearchManager {
       this.db.close();
       this.db = null;
     }
+    this._daemon?.stop();
   }
 
   private async runUpdate(
@@ -939,9 +975,15 @@ export class QmdMemoryManager implements MemorySearchManager {
     if (this.isSqliteBusyError(err)) {
       return true;
     }
+    return this.isTimeoutError(err);
+  }
+
+  private isTimeoutError(err: unknown): boolean {
+    if (err instanceof Error && (err as Error & { timedOut?: boolean }).timedOut === true) {
+      return true;
+    }
     const message = err instanceof Error ? err.message : String(err);
-    const normalized = message.toLowerCase();
-    return normalized.includes("timed out");
+    return message.toLowerCase().includes("timed out");
   }
 
   private shouldRunEmbed(force?: boolean): boolean {
@@ -1068,7 +1110,9 @@ export class QmdMemoryManager implements MemorySearchManager {
       const timer = opts?.timeoutMs
         ? setTimeout(() => {
             child.kill("SIGKILL");
-            reject(new Error(`qmd ${args.join(" ")} timed out after ${opts.timeoutMs}ms`));
+            const err = new Error(`qmd ${args.join(" ")} timed out after ${opts.timeoutMs}ms`);
+            (err as Error & { timedOut: boolean }).timedOut = true;
+            reject(err);
           }, opts.timeoutMs)
         : null;
       child.stdout.on("data", (data) => {
@@ -1160,7 +1204,9 @@ export class QmdMemoryManager implements MemorySearchManager {
       const timer = opts?.timeoutMs
         ? setTimeout(() => {
             child.kill("SIGKILL");
-            reject(new Error(`mcporter ${args.join(" ")} timed out after ${opts.timeoutMs}ms`));
+            const err = new Error(`mcporter ${args.join(" ")} timed out after ${opts.timeoutMs}ms`);
+            (err as Error & { timedOut: boolean }).timedOut = true;
+            reject(err);
           }, opts.timeoutMs)
         : null;
       child.stdout.on("data", (data) => {
@@ -1333,7 +1379,7 @@ export class QmdMemoryManager implements MemorySearchManager {
     const { DatabaseSync } = requireNodeSqlite();
     this.db = new DatabaseSync(this.indexPath, { readOnly: true });
     // Keep QMD recall responsive when the updater holds a write lock.
-    this.db.exec("PRAGMA busy_timeout = 1");
+    this.db.exec("PRAGMA busy_timeout = 2000");
     return this.db;
   }
 
@@ -1786,12 +1832,21 @@ export class QmdMemoryManager implements MemorySearchManager {
     log.debug(
       `qmd ${command} multi-collection workaround active (${collectionNames.length} collections)`,
     );
+    const settled = await Promise.allSettled(
+      collectionNames.map(async (collectionName) => {
+        const args = this.buildSearchArgs(command, query, limit);
+        args.push("-c", collectionName);
+        const result = await this.runQmd(args, { timeoutMs: this.qmd.limits.timeoutMs });
+        return { collectionName, parsed: parseQmdQueryJson(result.stdout, result.stderr) };
+      }),
+    );
     const bestByDocId = new Map<string, QmdQueryResult>();
-    for (const collectionName of collectionNames) {
-      const args = this.buildSearchArgs(command, query, limit);
-      args.push("-c", collectionName);
-      const result = await this.runQmd(args, { timeoutMs: this.qmd.limits.timeoutMs });
-      const parsed = parseQmdQueryJson(result.stdout, result.stderr);
+    for (const outcome of settled) {
+      if (outcome.status === "rejected") {
+        log.debug(`qmd ${command} collection query failed: ${String(outcome.reason)}`);
+        continue;
+      }
+      const { collectionName, parsed } = outcome.value;
       for (const entry of parsed) {
         const normalizedDocId =
           typeof entry.docid === "string" && entry.docid.trim().length > 0
@@ -1826,18 +1881,26 @@ export class QmdMemoryManager implements MemorySearchManager {
     minScore: number;
     collectionNames: string[];
   }): Promise<QmdQueryResult[]> {
+    const settled = await Promise.allSettled(
+      params.collectionNames.map((collectionName) =>
+        this.runQmdSearchViaMcporter({
+          mcporter: this.qmd.mcporter,
+          tool: params.tool,
+          query: params.query,
+          limit: params.limit,
+          minScore: params.minScore,
+          collection: collectionName,
+          timeoutMs: this.qmd.limits.timeoutMs,
+        }),
+      ),
+    );
     const bestByDocId = new Map<string, QmdQueryResult>();
-    for (const collectionName of params.collectionNames) {
-      const parsed = await this.runQmdSearchViaMcporter({
-        mcporter: this.qmd.mcporter,
-        tool: params.tool,
-        query: params.query,
-        limit: params.limit,
-        minScore: params.minScore,
-        collection: collectionName,
-        timeoutMs: this.qmd.limits.timeoutMs,
-      });
-      for (const entry of parsed) {
+    for (const outcome of settled) {
+      if (outcome.status === "rejected") {
+        log.debug(`mcporter collection search failed: ${String(outcome.reason)}`);
+        continue;
+      }
+      for (const entry of outcome.value) {
         if (typeof entry.docid !== "string" || !entry.docid.trim()) {
           continue;
         }
@@ -1864,6 +1927,32 @@ export class QmdMemoryManager implements MemorySearchManager {
       names.push(name);
     }
     return names;
+  }
+
+  private async runQmdSearchViaDaemon(
+    query: string,
+    limit: number,
+    collectionNames: string[],
+    mode: "vsearch" | "query",
+    minScore: number,
+  ): Promise<QmdQueryResult[]> {
+    if (!this._daemon) {
+      throw new Error("daemon not initialized");
+    }
+    const searches: Array<{ type: "lex" | "vec"; query: string }> =
+      mode === "vsearch"
+        ? [{ type: "vec", query }]
+        : [
+            { type: "lex", query: normalizeHanBm25Query(query) },
+            { type: "vec", query },
+          ];
+    const results = await this._daemon.search({
+      searches,
+      collections: collectionNames,
+      limit,
+      minScore,
+    });
+    return results;
   }
 
   private buildCollectionFilterArgs(collectionNames: string[]): string[] {

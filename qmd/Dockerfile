@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Use CUDA 12.8 devel base (ARM64 compatible) so node-llama-cpp compiles with CUDA support
-# Blackwell GB10 requires CUDA 12.8+ (compute capability 10.0)
+# Blackwell GB10 requires CUDA 12.8+ (compute capability 12.1 = sm_121)
 FROM nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu22.04
 
 # Install Node.js 22 + build dependencies for native modules (better-sqlite3, sqlite-vec, llama.cpp)
@@ -30,8 +30,8 @@ RUN npm install
 # Use host llama.cpp repo (additional_contexts: llama_src) instead of downloading
 # Copies into the path expected by `node-llama-cpp source build`
 COPY --from=llama_src . /app/node_modules/node-llama-cpp/llama/llama.cpp
-# Build with CUDA, targeting Blackwell sm_100 (GB10 = compute capability 10.0)
-RUN CMAKE_CUDA_ARCHITECTURES=100 npx --no node-llama-cpp source build --gpu cuda
+# Build with CUDA, targeting Blackwell sm_121 (GB10 = compute capability 12.1)
+RUN CMAKE_CUDA_ARCHITECTURES=121 npx --no node-llama-cpp source build --gpu cuda
 
 # Patch 2: add SSE transport (MCP 2024-11-05) for mcporter compatibility
 # Adds GET /mcp (SSE stream) + POST /messages handlers alongside Streamable HTTP

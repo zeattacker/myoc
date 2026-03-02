@@ -1,6 +1,51 @@
-# Ubuntu 24.04 Noble — glibc 2.39, GCC 13 (CXXABI_1.3.15)
-# Required for Lucid native module (lucid-native.linux-arm64-gnu.node)
-FROM ubuntu:24.04
+# syntax=docker/dockerfile:1
+
+# =============================================================================
+# Stage 1: Build QMD with CUDA for Blackwell GB10 (sm_121)
+#
+# Uses CUDA devel image to compile node-llama-cpp from source.
+# Artifacts (dist/ + node_modules/) are copied to the final stage.
+# Build contexts required:
+#   qmd_src   = ~/Documents/Projects/qmd
+#   llama_src = ~/Documents/Projects/llm/llcp/llama.cpp
+# =============================================================================
+FROM nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04 AS qmd_builder
+
+# Install Node.js 22 + build dependencies for node-llama-cpp CUDA compilation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl gnupg python3 make g++ cmake \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /qmd
+
+# Copy QMD source (build context: qmd_src)
+COPY --from=qmd_src . .
+
+# Install npm dependencies (downloads prebuilt ARM64 CPU binary initially)
+RUN npm install
+
+# Use local llama.cpp repo instead of re-downloading from HuggingFace
+COPY --from=llama_src . /qmd/node_modules/node-llama-cpp/llama/llama.cpp
+
+# Recompile node-llama-cpp with CUDA targeting Blackwell sm_121 (GB10 = CC 12.1)
+RUN CMAKE_CUDA_ARCHITECTURES=121 npx --no node-llama-cpp source build --gpu cuda
+
+# Build TypeScript → dist/qmd.js (adds #!/usr/bin/env node shebang automatically)
+RUN npm run build
+
+
+# =============================================================================
+# Stage 2: OpenClaw Gateway
+#
+# Switched from ubuntu:24.04 to nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04.
+# Both are Ubuntu 24.04 (Noble) — same glibc 2.39 / GCC 13 (CXXABI_1.3.15),
+# so the Lucid native module remains fully compatible.
+# The CUDA runtime libraries (libcudart, cuBLAS, etc.) enable node-llama-cpp
+# GPU acceleration inside the container for QMD memory search.
+# =============================================================================
+FROM nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04
 
 # Install Bun (required for build scripts)
 RUN apt-get update && \
@@ -101,6 +146,18 @@ USER root
 RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
  && chmod 755 /app/openclaw.mjs
 
+# Install compiled QMD from builder stage.
+# /opt/qmd/dist/qmd.js has #!/usr/bin/env node shebang — directly executable.
+# node_modules contains node-llama-cpp compiled with CUDA sm_121 for Blackwell GB10.
+# libgomp1: GNU OpenMP runtime required by CUDA-compiled node-llama-cpp binaries.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+COPY --chown=node:node --from=qmd_builder /qmd/dist /opt/qmd/dist
+COPY --chown=node:node --from=qmd_builder /qmd/node_modules /opt/qmd/node_modules
+COPY --chown=node:node --from=qmd_builder /qmd/package.json /opt/qmd/package.json
+RUN ln -sf /opt/qmd/dist/qmd.js /usr/local/bin/qmd \
+ && chmod 755 /opt/qmd/dist/qmd.js
+
 ENV NODE_ENV=production
 
 USER root
@@ -119,7 +176,7 @@ USER node
 # Setup npm global prefix for non-root skill/MCP installs
 RUN mkdir -p /home/node/.npm-global && \
     npm config set prefix /home/node/.npm-global
-ENV PATH="/home/node/.lucid/bin:/home/node/.lucid/bun/bin:/home/node/.npm-global/bin:/home/node/.local/bin:${PATH}"
+ENV PATH="/home/node/.openclaw/bin:/home/node/.lucid/bin:/home/node/.lucid/bun/bin:/home/node/.npm-global/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Install skill dependencies: Bitwarden CLI (vaultwarden skill), MCPorter (mcporter skill)
 RUN npm install -g @bitwarden/cli mcporter

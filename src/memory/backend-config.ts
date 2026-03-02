@@ -7,6 +7,7 @@ import type {
   MemoryBackend,
   MemoryCitationsMode,
   MemoryQmdConfig,
+  MemoryQmdDaemonConfig,
   MemoryQmdIndexPath,
   MemoryQmdMcporterConfig,
   MemoryQmdSearchMode,
@@ -57,9 +58,18 @@ export type ResolvedQmdMcporterConfig = {
   startDaemon: boolean;
 };
 
+export type ResolvedQmdDaemonConfig = {
+  enabled: boolean;
+  port: number;
+  idleTimeoutMs: number;
+  coldStartTimeoutMs: number;
+  warmTimeoutMs: number;
+};
+
 export type ResolvedQmdConfig = {
   command: string;
   mcporter: ResolvedQmdMcporterConfig;
+  daemon: ResolvedQmdDaemonConfig;
   searchMode: MemoryQmdSearchMode;
   collections: ResolvedQmdCollection[];
   sessions: ResolvedQmdSessionConfig;
@@ -92,6 +102,32 @@ const DEFAULT_QMD_MCPORTER: ResolvedQmdMcporterConfig = {
   serverName: "qmd",
   startDaemon: true,
 };
+
+const DEFAULT_QMD_DAEMON_BASE_PORT = 19200;
+const DEFAULT_QMD_DAEMON_IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 min
+const DEFAULT_QMD_DAEMON_COLD_START_TIMEOUT_MS = 30_000;
+const DEFAULT_QMD_DAEMON_WARM_TIMEOUT_MS = 10_000;
+
+function resolveDaemonConfig(raw: MemoryQmdDaemonConfig | undefined): ResolvedQmdDaemonConfig {
+  const enabled = raw?.enabled === true;
+  const port =
+    typeof raw?.port === "number" && Number.isFinite(raw.port) && raw.port > 0
+      ? Math.floor(raw.port)
+      : DEFAULT_QMD_DAEMON_BASE_PORT;
+  const idleTimeoutMs =
+    typeof raw?.idleTimeoutMs === "number" && raw.idleTimeoutMs >= 0
+      ? Math.floor(raw.idleTimeoutMs)
+      : DEFAULT_QMD_DAEMON_IDLE_TIMEOUT_MS;
+  const coldStartTimeoutMs =
+    typeof raw?.coldStartTimeoutMs === "number" && raw.coldStartTimeoutMs > 0
+      ? Math.floor(raw.coldStartTimeoutMs)
+      : DEFAULT_QMD_DAEMON_COLD_START_TIMEOUT_MS;
+  const warmTimeoutMs =
+    typeof raw?.warmTimeoutMs === "number" && raw.warmTimeoutMs > 0
+      ? Math.floor(raw.warmTimeoutMs)
+      : DEFAULT_QMD_DAEMON_WARM_TIMEOUT_MS;
+  return { enabled, port, idleTimeoutMs, coldStartTimeoutMs, warmTimeoutMs };
+}
 
 const DEFAULT_QMD_SCOPE: SessionSendPolicyConfig = {
   default: "deny",
@@ -319,6 +355,7 @@ export function resolveMemoryBackendConfig(params: {
   const resolved: ResolvedQmdConfig = {
     command,
     mcporter: resolveMcporterConfig(qmdCfg?.mcporter),
+    daemon: resolveDaemonConfig(qmdCfg?.daemon),
     searchMode: resolveSearchMode(qmdCfg?.searchMode),
     collections,
     includeDefaultMemory,

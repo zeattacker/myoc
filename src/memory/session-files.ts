@@ -1,5 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  isPrimarySessionTranscriptFileName,
+  isSessionArchiveArtifactName,
+} from "../config/sessions/artifacts.js";
 import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
 import { redactSensitiveText } from "../logging/redact.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -25,7 +29,9 @@ export async function listSessionFilesForAgent(agentId: string): Promise<string[
     return entries
       .filter((entry) => entry.isFile())
       .map((entry) => entry.name)
-      .filter((name) => name.endsWith(".jsonl"))
+      .filter(
+        (name) => isPrimarySessionTranscriptFileName(name) || isSessionArchiveArtifactName(name),
+      )
       .map((name) => path.join(dir, name));
   } catch {
     return [];

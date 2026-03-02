@@ -10,9 +10,28 @@ export type MemoryConfig = {
   qmd?: MemoryQmdConfig;
 };
 
+export type MemoryQmdDaemonConfig = {
+  /**
+   * Keep a persistent `qmd mcp --http` process per agent so GGUF models stay
+   * loaded between queries (avoids ~9 s cold-start on every search).
+   * Only used for `vsearch` and `query` search modes; BM25 (`search`) keeps
+   * using the fast per-query CLI path.
+   */
+  enabled?: boolean;
+  /** Base port; each agent is assigned basePort + agentIndex. Default: 19200 */
+  port?: number;
+  /** Keep daemon alive this long after last query (ms). 0 = never auto-stop. Default: 900000 (15 min) */
+  idleTimeoutMs?: number;
+  /** Timeout waiting for daemon process to become ready on cold start (ms). Default: 30000 */
+  coldStartTimeoutMs?: number;
+  /** Per-query timeout when daemon is warm (ms). Default: 10000 */
+  warmTimeoutMs?: number;
+};
+
 export type MemoryQmdConfig = {
   command?: string;
   mcporter?: MemoryQmdMcporterConfig;
+  daemon?: MemoryQmdDaemonConfig;
   searchMode?: MemoryQmdSearchMode;
   includeDefaultMemory?: boolean;
   paths?: MemoryQmdIndexPath[];
