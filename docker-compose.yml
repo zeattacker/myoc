@@ -5,18 +5,19 @@ services:
       additional_contexts:
         qmd_src: ~/Documents/Projects/qmd
         llama_src: ~/Documents/Projects/llm/llcp/llama.cpp
+      args:
+        OPENCLAW_EXTENSIONS: ${OPENCLAW_EXTENSIONS:-}
     image: ${OPENCLAW_IMAGE:-openclaw:local}
     environment:
       HOME: /home/node
       TERM: xterm-256color
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
       OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
       CLAUDE_AI_SESSION_KEY: ${CLAUDE_AI_SESSION_KEY:-}
       CLAUDE_WEB_SESSION_KEY: ${CLAUDE_WEB_SESSION_KEY:-}
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       KIMI_BOT_TOKEN: ${KIMI_BOT_TOKEN:-}
-      MC_SERVER_URL: http://mission-control:8001
       GOG_KEYRING_PASSWORD: openclaw-gog-keyring
       GOG_ACCOUNT: finance@gamatecha.com
       PATH: /home/node/.openclaw/bin:/home/node/.npm-global/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -71,27 +72,6 @@ services:
       retries: 5
       start_period: 20s
 
-  mission-control:
-    build:
-      context: ../mission-control
-      dockerfile: Dockerfile
-    ports:
-      - "${MISSION_CONTROL_PORT:-8080}:8080"
-      - "${PLAN_API_PORT:-8001}:8001"
-    volumes:
-      - ${OPENCLAW_CONFIG_DIR}:/home/nvidia/.openclaw:ro
-      - ${OPENCLAW_WORKSPACE_DIR}:/home/nvidia/.openclaw/workspace  # writable for edit
-    environment:
-      - OPENCLAW_GATEWAY_URL=http://openclaw-gateway:18789
-      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
-      - OPENCLAW_TASKS_DIR=/home/nvidia/.openclaw/workspace
-      - OPENCLAW_AGENTS_DIR=/home/nvidia/.openclaw/agents
-      - PLAN_FILE=/home/nvidia/.openclaw/workspace/plan.json
-      - PLAN_MEMORY_DIR=/home/nvidia/.openclaw/workspace/plan_memory
-    depends_on:
-      - openclaw-gateway
-    restart: unless-stopped
-
   pinchtab:
     image: pinchtab/pinchtab
     security_opt:
@@ -121,7 +101,7 @@ services:
     environment:
       HOME: /home/node
       TERM: xterm-256color
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
       OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
       BROWSER: echo
       CLAUDE_AI_SESSION_KEY: ${CLAUDE_AI_SESSION_KEY:-}

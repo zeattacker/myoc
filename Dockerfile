@@ -1,14 +1,28 @@
 # syntax=docker/dockerfile:1
 
 # =============================================================================
-# Stage 1: Build QMD with CUDA for Blackwell GB10 (sm_121)
+# Multi-stage build: QMD CUDA builder + upstream OpenClaw pattern
 #
+# Stage 1: qmd_builder   — compile QMD with CUDA (our custom stage)
+# Stage 2: ext-deps      — extract extension package.json (from upstream)
+# Stage 3: build         — compile TypeScript + bundle UI (from upstream)
+# Stage 4: base-cuda     — CUDA runtime base image (our custom)
+# Stage 5: runtime       — final image (hybrid: upstream layout + CUDA + QMD)
+#
+# Produces a minimal runtime image without build tools, source code, or Bun.
+# Works with Docker, Buildx, and Podman.
+# =============================================================================
+
+ARG OPENCLAW_EXTENSIONS=""
+ARG OPENCLAW_NODE_BOOKWORM_IMAGE="node:22-bookworm@sha256:b501c082306a4f528bc4038cbf2fbb58095d583d0419a259b2114b5ac53d12e9"
+ARG OPENCLAW_NODE_BOOKWORM_DIGEST="sha256:b501c082306a4f528bc4038cbf2fbb58095d583d0419a259b2114b5ac53d12e9"
+
+# ── Stage 1: QMD CUDA Builder ───────────────────────────────────
+# Build QMD with CUDA for Blackwell GB10 (sm_121).
 # Uses CUDA devel image to compile node-llama-cpp from source.
-# Artifacts (dist/ + node_modules/) are copied to the final stage.
 # Build contexts required:
 #   qmd_src   = ~/Documents/Projects/qmd
 #   llama_src = ~/Documents/Projects/llm/llcp/llama.cpp
-# =============================================================================
 FROM nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04 AS qmd_builder
 
 # Install Node.js 22 + build dependencies for node-llama-cpp CUDA compilation
@@ -32,43 +46,73 @@ COPY --from=llama_src . /qmd/node_modules/node-llama-cpp/llama/llama.cpp
 # Recompile node-llama-cpp with CUDA targeting Blackwell sm_121 (GB10 = CC 12.1)
 RUN CMAKE_CUDA_ARCHITECTURES=121 npx --no node-llama-cpp source build --gpu cuda
 
-# Build TypeScript → dist/qmd.js (adds #!/usr/bin/env node shebang automatically)
+# Build TypeScript -> dist/qmd.js (adds #!/usr/bin/env node shebang automatically)
 RUN npm run build
 
 
-# =============================================================================
-# Stage 2: OpenClaw Gateway
-#
-# Switched from ubuntu:24.04 to nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04.
-# Both are Ubuntu 24.04 (Noble) — same glibc 2.39 / GCC 13 (CXXABI_1.3.15),
-# so the Lucid native module remains fully compatible.
-# The CUDA runtime libraries (libcudart, cuBLAS, etc.) enable node-llama-cpp
-# GPU acceleration inside the container for QMD memory search.
-# =============================================================================
-FROM nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04
+# ── Stage 2: Extension deps ─────────────────────────────────────
+FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS ext-deps
+ARG OPENCLAW_EXTENSIONS
+COPY extensions /tmp/extensions
+# Copy package.json for opted-in extensions so pnpm resolves their deps.
+RUN mkdir -p /out && \
+    for ext in $OPENCLAW_EXTENSIONS; do \
+      if [ -f "/tmp/extensions/$ext/package.json" ]; then \
+        mkdir -p "/out/$ext" && \
+        cp "/tmp/extensions/$ext/package.json" "/out/$ext/package.json"; \
+      fi; \
+    done
 
-# OCI base-image metadata for downstream image consumers.
-# If you change these annotations, also update:
-# - docs/install/docker.md ("Base image metadata" section)
-# - https://docs.openclaw.ai/install/docker
-LABEL org.opencontainers.image.base.name="docker.io/library/node:22-bookworm" \
-  org.opencontainers.image.base.digest="sha256:cd7bcd2e7a1e6f72052feb023c7f6b722205d3fcab7bbcbd2d1bfdab10b1e935" \
-  org.opencontainers.image.source="https://github.com/openclaw/openclaw" \
-  org.opencontainers.image.url="https://openclaw.ai" \
-  org.opencontainers.image.documentation="https://docs.openclaw.ai/install/docker" \
-  org.opencontainers.image.licenses="MIT" \
-  org.opencontainers.image.title="OpenClaw" \
-  org.opencontainers.image.description="OpenClaw gateway and CLI runtime container image"
+
+# ── Stage 3: Build ──────────────────────────────────────────────
+FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS build
 
 # Install Bun (required for build scripts)
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl unzip && \
-    curl -fsSL https://bun.sh/install | bash && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH="/root/.bun/bin:${PATH}"
 
-# Install Node.js 22.x from NodeSource + corepack
+RUN corepack enable
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY ui/package.json ./ui/package.json
+COPY patches ./patches
+COPY scripts ./scripts
+
+COPY --from=ext-deps /out/ ./extensions/
+
+# Reduce OOM risk on low-memory hosts during dependency installation.
+# Docker builds on small VMs may otherwise fail with "Killed" (exit 137).
+RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
+
+COPY . .
+
+# A2UI bundle may fail under QEMU cross-compilation (e.g. building amd64
+# on Apple Silicon). CI builds natively per-arch so this is a no-op there.
+# Stub it so local cross-arch builds still succeed.
+RUN pnpm canvas:a2ui:bundle || \
+    (echo "A2UI bundle: creating stub (non-fatal)" && \
+     mkdir -p src/canvas-host/a2ui && \
+     echo "/* A2UI bundle unavailable in this build */" > src/canvas-host/a2ui/a2ui.bundle.js && \
+     echo "stub" > src/canvas-host/a2ui/.bundle.hash && \
+     rm -rf vendor/a2ui apps/shared/OpenClawKit/Tools/CanvasA2UI)
+RUN pnpm build
+# Force pnpm for UI build (Bun may fail on ARM/Synology architectures)
+ENV OPENCLAW_PREFER_PNPM=1
+RUN pnpm ui:build
+
+
+# ── Stage 4: CUDA runtime base ──────────────────────────────────
+# Uses CUDA runtime instead of upstream's node:22-bookworm for GPU inference.
+# Ubuntu 24.04 Noble (glibc 2.39) is forward-compatible with bookworm (2.36) builds.
+FROM nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04 AS base-cuda
+ARG OPENCLAW_NODE_BOOKWORM_DIGEST
+
+LABEL org.opencontainers.image.base.name="nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04" \
+  org.opencontainers.image.base.digest="${OPENCLAW_NODE_BOOKWORM_DIGEST}"
+
+# Install Node.js 22.x from NodeSource (CUDA image doesn't include it)
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg && \
@@ -81,10 +125,8 @@ RUN apt-get update && \
     apt-get install -y nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN corepack enable
-
-# Create node user (uid 1000) — same as official node Docker image
-# Ubuntu 24.04 may already have uid/gid 1000 used by 'ubuntu' user — rename it
+# Create node user (uid 1000) — same as official node Docker image.
+# Ubuntu 24.04 may already have uid/gid 1000 used by 'ubuntu' user — rename it.
 RUN if getent passwd 1000 > /dev/null 2>&1; then \
       usermod -l node -d /home/node -m $(getent passwd 1000 | cut -d: -f1) && \
       groupmod -n node $(getent group 1000 | cut -d: -f1) 2>/dev/null || true; \
@@ -93,23 +135,49 @@ RUN if getent passwd 1000 > /dev/null 2>&1; then \
       useradd --uid 1000 --gid 1000 --shell /bin/bash --create-home node; \
     fi
 
-WORKDIR /app
-RUN chown node:node /app
 
-ARG OPENCLAW_DOCKER_APT_PACKAGES=""
-# Install system packages + Docker CLI (ubuntu/noble repo)
+# ── Stage 5: Runtime ────────────────────────────────────────────
+FROM base-cuda
+
+# OCI metadata
+LABEL org.opencontainers.image.source="https://github.com/openclaw/openclaw" \
+  org.opencontainers.image.url="https://openclaw.ai" \
+  org.opencontainers.image.documentation="https://docs.openclaw.ai/install/docker" \
+  org.opencontainers.image.licenses="MIT" \
+  org.opencontainers.image.title="OpenClaw" \
+  org.opencontainers.image.description="OpenClaw gateway and CLI runtime container image (CUDA GPU)"
+
+WORKDIR /app
+
+# Install system utilities (from upstream) + our custom additions.
+# python3/pip: skill scripts; sudo: runtime admin; openssh-client: SSH skills;
+# libgomp1: GNU OpenMP runtime required by CUDA-compiled node-llama-cpp.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      python3-pip \
-      python3 \
-      sudo \
-      ca-certificates \
-      curl \
-      gnupg \
-      git \
-      openssh-client \
-      $OPENCLAW_DOCKER_APT_PACKAGES && \
-    install -m 0755 -d /etc/apt/keyrings && \
+      procps hostname curl git openssl \
+      python3 python3-pip sudo openssh-client libgomp1 && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+RUN chown node:node /app
+
+# Copy built artifacts from build stage (no source code, no Bun)
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/package.json .
+COPY --from=build --chown=node:node /app/openclaw.mjs .
+COPY --from=build --chown=node:node /app/extensions ./extensions
+COPY --from=build --chown=node:node /app/skills ./skills
+COPY --from=build --chown=node:node /app/docs ./docs
+
+# Activate the exact pinned package manager so the container does not
+# rely on a first-run network fetch or missing shims under the non-root user.
+RUN corepack enable && \
+    corepack prepare "$(node -p "require('./package.json').packageManager")" --activate
+
+# Install Docker CLI unconditionally (needed for sandbox/DinD).
+# Uses Ubuntu noble repo (not Debian bookworm) since base is Ubuntu 24.04.
+RUN install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
@@ -120,21 +188,20 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
-COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-COPY --chown=node:node ui/package.json ./ui/package.json
-COPY --chown=node:node patches ./patches
-COPY --chown=node:node scripts ./scripts
-
-USER node
-# Reduce OOM risk on low-memory hosts during dependency installation.
-# Docker builds on small VMs may otherwise fail with "Killed" (exit 137).
-RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
+# Install additional system packages needed by skills or extensions.
+# Example: docker build --build-arg OPENCLAW_DOCKER_APT_PACKAGES="wget" .
+ARG OPENCLAW_DOCKER_APT_PACKAGES=""
+RUN if [ -n "$OPENCLAW_DOCKER_APT_PACKAGES" ]; then \
+      apt-get update && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $OPENCLAW_DOCKER_APT_PACKAGES && \
+      apt-get clean && \
+      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
+    fi
 
 # Optionally install Chromium and Xvfb for browser automation.
 # Build with: docker build --build-arg OPENCLAW_INSTALL_BROWSER=1 ...
 # Adds ~300MB but eliminates the 60-90s Playwright install on every container start.
-# Must run after pnpm install so playwright-core is available in node_modules.
-USER root
+# Must run after node_modules COPY so playwright-core is available.
 ARG OPENCLAW_INSTALL_BROWSER=""
 RUN if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
       apt-get update && \
@@ -147,41 +214,7 @@ RUN if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
       rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     fi
 
-# Optionally install Docker CLI for sandbox container management.
-# Build with: docker build --build-arg OPENCLAW_INSTALL_DOCKER_CLI=1 ...
-# Adds ~50MB. Only the CLI is installed — no Docker daemon.
-# Required for agents.defaults.sandbox to function in Docker deployments.
-ARG OPENCLAW_INSTALL_DOCKER_CLI=""
-ARG OPENCLAW_DOCKER_GPG_FINGERPRINT="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
-RUN if [ -n "$OPENCLAW_INSTALL_DOCKER_CLI" ]; then \
-      apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates curl gnupg && \
-      install -m 0755 -d /etc/apt/keyrings && \
-      # Verify Docker apt signing key fingerprint before trusting it as a root key.
-      # Update OPENCLAW_DOCKER_GPG_FINGERPRINT when Docker rotates release keys.
-      curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/docker.gpg.asc && \
-      expected_fingerprint="$(printf '%s' "$OPENCLAW_DOCKER_GPG_FINGERPRINT" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')" && \
-      actual_fingerprint="$(gpg --batch --show-keys --with-colons /tmp/docker.gpg.asc | awk -F: '$1 == \"fpr\" { print toupper($10); exit }')" && \
-      if [ -z "$actual_fingerprint" ] || [ "$actual_fingerprint" != "$expected_fingerprint" ]; then \
-        echo "ERROR: Docker apt key fingerprint mismatch (expected $expected_fingerprint, got ${actual_fingerprint:-<empty>})" >&2; \
-        exit 1; \
-      fi && \
-      gpg --dearmor -o /etc/apt/keyrings/docker.gpg /tmp/docker.gpg.asc && \
-      rm -f /tmp/docker.gpg.asc && \
-      chmod a+r /etc/apt/keyrings/docker.gpg && \
-      printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable\n' \
-        "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/docker.list && \
-      apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        docker-ce-cli docker-compose-plugin && \
-      apt-get clean && \
-      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
-    fi
-
-USER node
-COPY --chown=node:node . .
-# Normalize copied plugin/agent paths so plugin safety checks do not reject
+# Normalize extension paths so plugin safety checks do not reject
 # world-writable directories inherited from source file modes.
 RUN for dir in /app/extensions /app/.agent /app/.agents; do \
       if [ -d "$dir" ]; then \
@@ -189,22 +222,14 @@ RUN for dir in /app/extensions /app/.agent /app/.agents; do \
         find "$dir" -type f -exec chmod 644 {} +; \
       fi; \
     done
-RUN pnpm build
-# Force pnpm for UI build (Bun may fail on ARM/Synology architectures)
-ENV OPENCLAW_PREFER_PNPM=1
-RUN pnpm ui:build
 
 # Expose the CLI binary without requiring npm global writes as non-root.
-USER root
 RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
  && chmod 755 /app/openclaw.mjs
 
 # Install compiled QMD from builder stage.
 # /opt/qmd/dist/qmd.js has #!/usr/bin/env node shebang — directly executable.
 # node_modules contains node-llama-cpp compiled with CUDA sm_121 for Blackwell GB10.
-# libgomp1: GNU OpenMP runtime required by CUDA-compiled node-llama-cpp binaries.
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
- && rm -rf /var/lib/apt/lists/*
 COPY --chown=node:node --from=qmd_builder /qmd/dist /opt/qmd/dist
 COPY --chown=node:node --from=qmd_builder /qmd/node_modules /opt/qmd/node_modules
 COPY --chown=node:node --from=qmd_builder /qmd/package.json /opt/qmd/package.json
@@ -213,12 +238,8 @@ RUN ln -sf /opt/qmd/dist/qmd.js /usr/local/bin/qmd \
 
 ENV NODE_ENV=production
 
-USER root
-# Allow non-root user to write temp files during runtime/tests.
-RUN chown -R node:node /app
-
-# Add node user to docker group for host docker access (GID will be set at runtime)
-# Also configure sudo access for the node user
+# Add node user to docker group for host docker access (GID set at runtime).
+# Also configure sudo access for the node user.
 RUN groupadd -g 999 docker || true && \
     usermod -aG docker node && \
     echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
@@ -229,7 +250,7 @@ USER node
 # Setup npm global prefix for non-root skill/MCP installs
 RUN mkdir -p /home/node/.npm-global && \
     npm config set prefix /home/node/.npm-global
-ENV PATH="/home/node/.openclaw/bin:/home/node/.lucid/bin:/home/node/.lucid/bun/bin:/home/node/.npm-global/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ENV PATH="/home/node/.openclaw/bin:/home/node/.npm-global/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Install skill dependencies: Bitwarden CLI (vaultwarden skill), MCPorter (mcporter skill)
 RUN npm install -g @bitwarden/cli mcporter

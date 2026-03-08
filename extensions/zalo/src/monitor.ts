@@ -1,9 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { MarkdownTableMode, OpenClawConfig, OutboundReplyPayload } from "openclaw/plugin-sdk";
+import type {
+  MarkdownTableMode,
+  OpenClawConfig,
+  OutboundReplyPayload,
+} from "openclaw/plugin-sdk/zalo";
 import {
   createScopedPairingAccess,
   createReplyPrefixOptions,
-  registerPluginHttpRoute,
+  issuePairingChallenge,
   resolveDirectDmAuthorizationOutcome,
   resolveSenderCommandAuthorizationWithRuntime,
   resolveOutboundMediaUrls,
@@ -12,7 +16,7 @@ import {
   sendMediaWithLeadingCaption,
   resolveWebhookPath,
   warnMissingProviderGroupPolicyFallbackOnce,
-} from "openclaw/plugin-sdk";
+} from "openclaw/plugin-sdk/zalo";
 import type { ResolvedZaloAccount } from "./accounts.js";
 import {
   ZaloApiError,
@@ -77,22 +81,22 @@ function logVerbose(core: ZaloCoreRuntime, runtime: ZaloRuntimeEnv, message: str
 
 export function registerZaloWebhookTarget(target: ZaloWebhookTarget): () => void {
   return registerZaloWebhookTargetInternal(target, {
-    onFirstPathTarget: ({ path }) =>
-      registerPluginHttpRoute({
-        path,
-        pluginId: "zalo",
-        source: "zalo-webhook",
-        accountId: target.account.accountId,
-        log: target.runtime.log,
-        handler: async (req, res) => {
-          const handled = await handleZaloWebhookRequest(req, res);
-          if (!handled && !res.headersSent) {
-            res.statusCode = 404;
-            res.setHeader("Content-Type", "text/plain; charset=utf-8");
-            res.end("Not Found");
-          }
-        },
-      }),
+    route: {
+      auth: "plugin",
+      match: "exact",
+      pluginId: "zalo",
+      source: "zalo-webhook",
+      accountId: target.account.accountId,
+      log: target.runtime.log,
+      handler: async (req, res) => {
+        const handled = await handleZaloWebhookRequest(req, res);
+        if (!handled && !res.headersSent) {
+          res.statusCode = 404;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("Not Found");
+        }
+      },
+    },
   });
 }
 
@@ -411,31 +415,30 @@ async function processMessageWithPipeline(params: {
   }
   if (directDmOutcome === "unauthorized") {
     if (dmPolicy === "pairing") {
-      const { code, created } = await pairing.upsertPairingRequest({
-        id: senderId,
+      await issuePairingChallenge({
+        channel: "zalo",
+        senderId,
+        senderIdLine: `Your Zalo user id: ${senderId}`,
         meta: { name: senderName ?? undefined },
-      });
-
-      if (created) {
-        logVerbose(core, runtime, `zalo pairing request sender=${senderId}`);
-        try {
+        upsertPairingRequest: pairing.upsertPairingRequest,
+        onCreated: () => {
+          logVerbose(core, runtime, `zalo pairing request sender=${senderId}`);
+        },
+        sendPairingReply: async (text) => {
           await sendMessage(
             token,
             {
               chat_id: chatId,
-              text: core.channel.pairing.buildPairingReply({
-                channel: "zalo",
-                idLine: `Your Zalo user id: ${senderId}`,
-                code,
-              }),
+              text,
             },
             fetcher,
           );
           statusSink?.({ lastOutboundAt: Date.now() });
-        } catch (err) {
+        },
+        onReplyError: (err) => {
           logVerbose(core, runtime, `zalo pairing reply failed for ${senderId}: ${String(err)}`);
-        }
-      }
+        },
+      });
     } else {
       logVerbose(
         core,
@@ -653,17 +656,7 @@ export async function monitorZaloProvider(options: ZaloMonitorOptions): Promise<
       mediaMaxMb: effectiveMediaMaxMb,
       fetcher,
     });
-    const unregisterRoute = registerPluginHttpRoute({
-      path,
-      auth: "plugin",
-      match: "exact",
-      pluginId: "zalo",
-      accountId: account.accountId,
-      log: (message) => logVerbose(core, runtime, message),
-      handler: handleZaloWebhookRequest,
-    });
     stopHandlers.push(unregister);
-    stopHandlers.push(unregisterRoute);
     abortSignal.addEventListener(
       "abort",
       () => {
