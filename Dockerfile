@@ -1,13 +1,17 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.7
 
 # =============================================================================
 # Multi-stage build: QMD CUDA builder + upstream OpenClaw pattern
 #
-# Stage 1: qmd_builder   — compile QMD with CUDA (our custom stage)
-# Stage 2: ext-deps      — extract extension package.json (from upstream)
-# Stage 3: build         — compile TypeScript + bundle UI (from upstream)
-# Stage 4: base-cuda     — CUDA runtime base image (our custom)
-# Stage 5: runtime       — final image (hybrid: upstream layout + CUDA + QMD)
+# Opt-in extension dependencies at build time (space-separated directory names).
+# Example: docker build --build-arg OPENCLAW_EXTENSIONS="diagnostics-otel matrix" .
+#
+# Stage 1: qmd_builder     — compile QMD with CUDA (our custom stage)
+# Stage 2: ext-deps        — extract extension package.json (from upstream)
+# Stage 3: build           — compile TypeScript + bundle UI (from upstream)
+# Stage 4: runtime-assets  — prune dev deps + strip build metadata (from upstream v2026.3.8)
+# Stage 5: base-cuda       — CUDA runtime base image (our custom)
+# Stage 6: runtime         — final image (hybrid: upstream layout + CUDA + QMD)
 #
 # Produces a minimal runtime image without build tools, source code, or Bun.
 # Works with Docker, Buildx, and Podman.
@@ -78,15 +82,24 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY ui/package.json ./ui/package.json
 COPY patches ./patches
-COPY scripts ./scripts
 
 COPY --from=ext-deps /out/ ./extensions/
 
 # Reduce OOM risk on low-memory hosts during dependency installation.
 # Docker builds on small VMs may otherwise fail with "Killed" (exit 137).
-RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=openclaw-pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
+    NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
 
 COPY . .
+
+# Normalize extension paths now so runtime COPY preserves safe modes
+# without adding a second full extensions layer.
+RUN for dir in /app/extensions /app/.agent /app/.agents; do \
+      if [ -d "$dir" ]; then \
+        find "$dir" -type d -exec chmod 755 {} +; \
+        find "$dir" -type f -exec chmod 644 {} +; \
+      fi; \
+    done
 
 # A2UI bundle may fail under QEMU cross-compilation (e.g. building amd64
 # on Apple Silicon). CI builds natively per-arch so this is a no-op there.
@@ -97,13 +110,19 @@ RUN pnpm canvas:a2ui:bundle || \
      echo "/* A2UI bundle unavailable in this build */" > src/canvas-host/a2ui/a2ui.bundle.js && \
      echo "stub" > src/canvas-host/a2ui/.bundle.hash && \
      rm -rf vendor/a2ui apps/shared/OpenClawKit/Tools/CanvasA2UI)
-RUN pnpm build
+RUN pnpm build:docker
 # Force pnpm for UI build (Bun may fail on ARM/Synology architectures)
 ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm ui:build
 
+# ── Stage 4: Runtime assets (prune dev deps) ─────────────────────
+# Prune dev dependencies and strip build-only metadata before copying
+# runtime assets into the final image.
+FROM build AS runtime-assets
+RUN CI=true pnpm prune --prod && \
+    find dist -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' \) -delete
 
-# ── Stage 4: CUDA runtime base ──────────────────────────────────
+# ── Stage 5: CUDA runtime base ──────────────────────────────────
 # Uses CUDA runtime instead of upstream's node:22-bookworm for GPU inference.
 # Ubuntu 24.04 Noble (glibc 2.39) is forward-compatible with bookworm (2.36) builds.
 FROM nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04 AS base-cuda
@@ -136,7 +155,7 @@ RUN if getent passwd 1000 > /dev/null 2>&1; then \
     fi
 
 
-# ── Stage 5: Runtime ────────────────────────────────────────────
+# ── Stage 6: Runtime ────────────────────────────────────────────
 FROM base-cuda
 
 # OCI metadata
@@ -161,19 +180,23 @@ RUN apt-get update && \
 
 RUN chown node:node /app
 
-# Copy built artifacts from build stage (no source code, no Bun)
-COPY --from=build --chown=node:node /app/dist ./dist
-COPY --from=build --chown=node:node /app/node_modules ./node_modules
-COPY --from=build --chown=node:node /app/package.json .
-COPY --from=build --chown=node:node /app/openclaw.mjs .
-COPY --from=build --chown=node:node /app/extensions ./extensions
-COPY --from=build --chown=node:node /app/skills ./skills
-COPY --from=build --chown=node:node /app/docs ./docs
+# Copy pruned runtime artifacts (no dev deps, no .d.ts/.map files)
+COPY --from=runtime-assets --chown=node:node /app/dist ./dist
+COPY --from=runtime-assets --chown=node:node /app/node_modules ./node_modules
+COPY --from=runtime-assets --chown=node:node /app/package.json .
+COPY --from=runtime-assets --chown=node:node /app/openclaw.mjs .
+COPY --from=runtime-assets --chown=node:node /app/extensions ./extensions
+COPY --from=runtime-assets --chown=node:node /app/skills ./skills
+COPY --from=runtime-assets --chown=node:node /app/docs ./docs
 
-# Activate the exact pinned package manager so the container does not
-# rely on a first-run network fetch or missing shims under the non-root user.
-RUN corepack enable && \
-    corepack prepare "$(node -p "require('./package.json').packageManager")" --activate
+# Keep pnpm available in the runtime image for container-local workflows.
+# Use a shared Corepack home so the non-root `node` user does not need a
+# first-run network fetch when invoking pnpm.
+ENV COREPACK_HOME=/usr/local/share/corepack
+RUN install -d -m 0755 "$COREPACK_HOME" && \
+    corepack enable && \
+    corepack prepare "$(node -p "require('./package.json').packageManager")" --activate && \
+    chmod -R a+rX "$COREPACK_HOME"
 
 # Install Docker CLI unconditionally (needed for sandbox/DinD).
 # Uses Ubuntu noble repo (not Debian bookworm) since base is Ubuntu 24.04.
@@ -191,11 +214,11 @@ RUN install -m 0755 -d /etc/apt/keyrings && \
 # Install additional system packages needed by skills or extensions.
 # Example: docker build --build-arg OPENCLAW_DOCKER_APT_PACKAGES="wget" .
 ARG OPENCLAW_DOCKER_APT_PACKAGES=""
-RUN if [ -n "$OPENCLAW_DOCKER_APT_PACKAGES" ]; then \
+RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
+    if [ -n "$OPENCLAW_DOCKER_APT_PACKAGES" ]; then \
       apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $OPENCLAW_DOCKER_APT_PACKAGES && \
-      apt-get clean && \
-      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $OPENCLAW_DOCKER_APT_PACKAGES; \
     fi
 
 # Optionally install Chromium and Xvfb for browser automation.
@@ -203,15 +226,15 @@ RUN if [ -n "$OPENCLAW_DOCKER_APT_PACKAGES" ]; then \
 # Adds ~300MB but eliminates the 60-90s Playwright install on every container start.
 # Must run after node_modules COPY so playwright-core is available.
 ARG OPENCLAW_INSTALL_BROWSER=""
-RUN if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
+RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
+    if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
       apt-get update && \
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb && \
       mkdir -p /home/node/.cache/ms-playwright && \
       PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright \
       node /app/node_modules/playwright-core/cli.js install --with-deps chromium && \
-      chown -R node:node /home/node/.cache/ms-playwright && \
-      apt-get clean && \
-      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
+      chown -R node:node /home/node/.cache/ms-playwright; \
     fi
 
 # Normalize extension paths so plugin safety checks do not reject
