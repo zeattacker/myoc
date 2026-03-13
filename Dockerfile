@@ -9,7 +9,7 @@
 # Stage 1: qmd_builder     — compile QMD with CUDA (our custom stage)
 # Stage 2: ext-deps        — extract extension package.json (from upstream)
 # Stage 3: build           — compile TypeScript + bundle UI (from upstream)
-# Stage 4: runtime-assets  — prune dev deps + strip build metadata (from upstream v2026.3.8)
+# Stage 4: runtime-assets  — prune dev deps + strip build metadata (from upstream v2026.3.12)
 # Stage 5: base-cuda       — CUDA runtime base image (our custom)
 # Stage 6: runtime         — final image (hybrid: upstream layout + CUDA + QMD)
 #
@@ -18,8 +18,8 @@
 # =============================================================================
 
 ARG OPENCLAW_EXTENSIONS=""
-ARG OPENCLAW_NODE_BOOKWORM_IMAGE="node:22-bookworm@sha256:b501c082306a4f528bc4038cbf2fbb58095d583d0419a259b2114b5ac53d12e9"
-ARG OPENCLAW_NODE_BOOKWORM_DIGEST="sha256:b501c082306a4f528bc4038cbf2fbb58095d583d0419a259b2114b5ac53d12e9"
+ARG OPENCLAW_NODE_BOOKWORM_IMAGE="node:24-bookworm@sha256:3a09aa6354567619221ef6c45a5051b671f953f0a1924d1f819ffb236e520e6b"
+ARG OPENCLAW_NODE_BOOKWORM_DIGEST="sha256:3a09aa6354567619221ef6c45a5051b671f953f0a1924d1f819ffb236e520e6b"
 
 # ── Stage 1: QMD CUDA Builder ───────────────────────────────────
 # Build QMD with CUDA for Blackwell GB10 (sm_121).
@@ -29,10 +29,10 @@ ARG OPENCLAW_NODE_BOOKWORM_DIGEST="sha256:b501c082306a4f528bc4038cbf2fbb58095d58
 #   llama_src = ~/Documents/Projects/llm/llcp/llama.cpp
 FROM nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04 AS qmd_builder
 
-# Install Node.js 22 + build dependencies for node-llama-cpp CUDA compilation
+# Install Node.js 24 + build dependencies for node-llama-cpp CUDA compilation
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl gnupg python3 make g++ cmake \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
@@ -71,8 +71,18 @@ RUN mkdir -p /out && \
 # ── Stage 3: Build ──────────────────────────────────────────────
 FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS build
 
-# Install Bun (required for build scripts)
-RUN curl -fsSL https://bun.sh/install | bash
+# Install Bun (required for build scripts). Retry the whole bootstrap flow to
+# tolerate transient 5xx failures from bun.sh/GitHub during CI image builds.
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+      if curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL https://bun.sh/install | bash; then \
+        break; \
+      fi; \
+      if [ "$attempt" -eq 5 ]; then \
+        exit 1; \
+      fi; \
+      sleep $((attempt * 2)); \
+    done
 ENV PATH="/root/.bun/bin:${PATH}"
 
 RUN corepack enable
@@ -123,7 +133,7 @@ RUN CI=true pnpm prune --prod && \
     find dist -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' \) -delete
 
 # ── Stage 5: CUDA runtime base ──────────────────────────────────
-# Uses CUDA runtime instead of upstream's node:22-bookworm for GPU inference.
+# Uses CUDA runtime instead of upstream's node:24-bookworm for GPU inference.
 # Ubuntu 24.04 Noble (glibc 2.39) is forward-compatible with bookworm (2.36) builds.
 FROM nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04 AS base-cuda
 ARG OPENCLAW_NODE_BOOKWORM_DIGEST
@@ -131,14 +141,14 @@ ARG OPENCLAW_NODE_BOOKWORM_DIGEST
 LABEL org.opencontainers.image.base.name="nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04" \
   org.opencontainers.image.base.digest="${OPENCLAW_NODE_BOOKWORM_DIGEST}"
 
-# Install Node.js 22.x from NodeSource (CUDA image doesn't include it)
+# Install Node.js 24.x from NodeSource (CUDA image doesn't include it)
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
       > /etc/apt/sources.list.d/nodesource.list && \
     apt-get update && \
     apt-get install -y nodejs && \
@@ -195,7 +205,15 @@ COPY --from=runtime-assets --chown=node:node /app/docs ./docs
 ENV COREPACK_HOME=/usr/local/share/corepack
 RUN install -d -m 0755 "$COREPACK_HOME" && \
     corepack enable && \
-    corepack prepare "$(node -p "require('./package.json').packageManager")" --activate && \
+    for attempt in 1 2 3 4 5; do \
+      if corepack prepare "$(node -p "require('./package.json').packageManager")" --activate; then \
+        break; \
+      fi; \
+      if [ "$attempt" -eq 5 ]; then \
+        exit 1; \
+      fi; \
+      sleep $((attempt * 2)); \
+    done && \
     chmod -R a+rX "$COREPACK_HOME"
 
 # Install Docker CLI unconditionally (needed for sandbox/DinD).
@@ -276,7 +294,7 @@ RUN mkdir -p /home/node/.npm-global && \
 ENV PATH="/home/node/.openclaw/bin:/home/node/.npm-global/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Install skill dependencies: Bitwarden CLI (vaultwarden skill), MCPorter (mcporter skill)
-RUN npm install -g @bitwarden/cli mcporter
+RUN npm install -g @bitwarden/cli mcporter @google/gemini-cli
 
 # Install Python packages for skills
 # pypdf: PDF text extraction (gamatecha-workspace skill — Drive report summarization)
