@@ -3,7 +3,7 @@
 # Blackwell GB10 requires CUDA 12.8+ (compute capability 12.1 = sm_121)
 FROM nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu22.04
 
-# Install Node.js 22 + build dependencies for native modules (better-sqlite3, sqlite-vec, llama.cpp)
+# Install Node.js 24 + build dependencies for native modules (better-sqlite3, sqlite-vec, llama.cpp)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     g++ \
     cmake \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
@@ -21,7 +21,8 @@ WORKDIR /app
 COPY . .
 
 # Patch 1: bind HTTP server to 0.0.0.0 instead of localhost for cross-container access
-RUN sed -i 's/httpServer\.listen(port, "localhost"/httpServer.listen(port, "0.0.0.0"/' src/mcp.ts
+# Applied post-build to dist/mcp.js (source uses "127.0.0.1", not "localhost")
+RUN sed -i 's/httpServer\.listen(port, "127.0.0.1"/httpServer.listen(port, "0.0.0.0"/' src/mcp.ts
 
 # Install dependencies (node-llama-cpp downloads prebuilt ARM64 binary — CPU only)
 RUN npm install
@@ -278,7 +279,8 @@ print("OCR tool (Patch 4) applied OK")
 PYEOF
 
 # Build TypeScript → dist/qmd.js
-RUN npm run build
+RUN npm run build \
+    && sed -i 's/httpServer\.listen(port, "127.0.0.1"/httpServer.listen(port, "0.0.0.0"/' dist/mcp.js
 
 # Entrypoint script (written inline to avoid COPY context issues)
 RUN printf '#!/bin/bash\nset -e\n\n# Register workspace-memory (only collection with a special path not managed by ingest scripts)\n# Other collections (daily-report-marketing, monthly-reports, etc.) are auto-registered by index-reports.sh\nnode /app/dist/qmd.js collection add /collections/workspace-memory \\\n  --name workspace-memory 2>/dev/null || true\n\nexec node /app/dist/qmd.js mcp --http --port 8282\n' > /entrypoint.sh \

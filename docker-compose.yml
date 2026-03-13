@@ -17,6 +17,8 @@ services:
       CLAUDE_WEB_SESSION_KEY: ${CLAUDE_WEB_SESSION_KEY:-}
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       KIMI_BOT_TOKEN: ${KIMI_BOT_TOKEN:-}
       GOG_KEYRING_PASSWORD: openclaw-gog-keyring
       GOG_ACCOUNT: finance@gamatecha.com
@@ -44,6 +46,7 @@ services:
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
       - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+      - "19300:19300"
     dns:
       - 8.8.8.8
       - 8.8.4.4
