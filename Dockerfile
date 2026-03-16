@@ -9,7 +9,7 @@
 # Stage 1: qmd_builder     — compile QMD with CUDA (our custom stage)
 # Stage 2: ext-deps        — extract extension package.json (from upstream)
 # Stage 3: build           — compile TypeScript + bundle UI (from upstream)
-# Stage 4: runtime-assets  — prune dev deps + strip build metadata (from upstream v2026.3.12)
+# Stage 4: runtime-assets  — prune dev deps + strip build metadata (from upstream v2026.3.13)
 # Stage 5: base-cuda       — CUDA runtime base image (our custom)
 # Stage 6: runtime         — final image (hybrid: upstream layout + CUDA + QMD)
 #
@@ -181,7 +181,10 @@ WORKDIR /app
 # Install system utilities (from upstream) + our custom additions.
 # python3/pip: skill scripts; sudo: runtime admin; openssh-client: SSH skills;
 # libgomp1: GNU OpenMP runtime required by CUDA-compiled node-llama-cpp.
-RUN apt-get update && \
+RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       procps hostname curl git openssl \
       python3 python3-pip sudo openssh-client libgomp1 && \
