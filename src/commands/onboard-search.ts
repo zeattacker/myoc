@@ -10,7 +10,7 @@ import type { RuntimeEnv } from "../runtime.js";
 import type { WizardPrompter } from "../wizard/prompts.js";
 import type { SecretInputMode } from "./onboard-types.js";
 
-export type SearchProvider = "brave" | "gemini" | "grok" | "kimi" | "perplexity";
+export type SearchProvider = "brave" | "gemini" | "grok" | "kimi" | "perplexity" | "searxng";
 
 type SearchProviderEntry = {
   value: SearchProvider;
@@ -62,6 +62,14 @@ export const SEARCH_PROVIDER_OPTIONS: readonly SearchProviderEntry[] = [
     placeholder: "pplx-...",
     signupUrl: "https://www.perplexity.ai/settings/api",
   },
+  {
+    value: "searxng",
+    label: "SearXNG (self-hosted)",
+    hint: "Self-hosted meta-search · no API key needed",
+    envKeys: ["SEARXNG_URL"],
+    placeholder: "http://localhost:8888",
+    signupUrl: "https://docs.searxng.org/",
+  },
 ] as const;
 
 export function hasKeyInEnv(entry: SearchProviderEntry): boolean {
@@ -81,6 +89,8 @@ function rawKeyValue(config: OpenClawConfig, provider: SearchProvider): unknown 
       return search?.kimi?.apiKey;
     case "perplexity":
       return search?.perplexity?.apiKey;
+    case "searxng":
+      return search?.searxng?.url;
   }
 }
 
