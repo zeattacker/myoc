@@ -1,22 +1,30 @@
 # syntax=docker/dockerfile:1.7
 
-# =============================================================================
-# Multi-stage build: upstream OpenClaw pattern (no embedded QMD/CUDA)
+# Opt-in extension dependencies at build time (space-separated directory names).
+# Example: docker build --build-arg OPENCLAW_EXTENSIONS="diagnostics-otel matrix" .
 #
-# QMD and Docling run as standalone Docker containers — see ../docker-compose.yml
+# Multi-stage build produces a minimal runtime image without build tools,
+# source code, or Bun. Works with Docker, Buildx, and Podman.
+# The ext-deps stage extracts only the package.json files we need from
+# extensions/, so the main build layer is not invalidated by unrelated
+# extension source changes.
 #
-# Stage 1: ext-deps        — extract extension package.json
-# Stage 2: build           — compile TypeScript + bundle UI
-# Stage 3: runtime-assets  — prune dev deps + strip build metadata
-# Stage 4: runtime         — final image (node:24-bookworm, no CUDA)
-#
-# Produces a minimal runtime image without build tools, source code, or Bun.
-# =============================================================================
-
+# Two runtime variants:
+#   Default (bookworm):      docker build .
+#   Slim (bookworm-slim):    docker build --build-arg OPENCLAW_VARIANT=slim .
 ARG OPENCLAW_EXTENSIONS=""
+ARG OPENCLAW_VARIANT=default
+ARG OPENCLAW_DOCKER_APT_UPGRADE=1
 ARG OPENCLAW_NODE_BOOKWORM_IMAGE="node:24-bookworm@sha256:3a09aa6354567619221ef6c45a5051b671f953f0a1924d1f819ffb236e520e6b"
+ARG OPENCLAW_NODE_BOOKWORM_DIGEST="sha256:3a09aa6354567619221ef6c45a5051b671f953f0a1924d1f819ffb236e520e6b"
+ARG OPENCLAW_NODE_BOOKWORM_SLIM_IMAGE="node:24-bookworm-slim@sha256:e8e2e91b1378f83c5b2dd15f0247f34110e2fe895f6ca7719dbb780f929368eb"
+ARG OPENCLAW_NODE_BOOKWORM_SLIM_DIGEST="sha256:e8e2e91b1378f83c5b2dd15f0247f34110e2fe895f6ca7719dbb780f929368eb"
 
-# ── Stage 1: Extension deps ─────────────────────────────────────
+# Base images are pinned to SHA256 digests for reproducible builds.
+# Trade-off: digests must be updated manually when upstream tags move.
+# To update, run: docker buildx imagetools inspect node:24-bookworm (or podman)
+# and replace the digest below with the current multi-arch manifest list entry.
+
 FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS ext-deps
 ARG OPENCLAW_EXTENSIONS
 COPY extensions /tmp/extensions
@@ -28,7 +36,6 @@ RUN mkdir -p /out && \
         cp "/tmp/extensions/$ext/package.json" "/out/$ext/package.json"; \
       fi; \
     done
-
 
 # ── Stage 2: Build ──────────────────────────────────────────────
 FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS build
@@ -87,17 +94,32 @@ RUN pnpm build:docker
 ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm ui:build
 
-# ── Stage 3: Runtime assets (prune dev deps) ─────────────────────
 # Prune dev dependencies and strip build-only metadata before copying
 # runtime assets into the final image.
 FROM build AS runtime-assets
 RUN CI=true pnpm prune --prod && \
     find dist -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' \) -delete
 
-# ── Stage 4: Runtime ────────────────────────────────────────────
-FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS runtime
+# ── Runtime base images ─────────────────────────────────────────
+FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS base-default
+ARG OPENCLAW_NODE_BOOKWORM_DIGEST
+LABEL org.opencontainers.image.base.name="docker.io/library/node:24-bookworm" \
+  org.opencontainers.image.base.digest="${OPENCLAW_NODE_BOOKWORM_DIGEST}"
 
-# OCI metadata
+FROM ${OPENCLAW_NODE_BOOKWORM_SLIM_IMAGE} AS base-slim
+ARG OPENCLAW_NODE_BOOKWORM_SLIM_DIGEST
+LABEL org.opencontainers.image.base.name="docker.io/library/node:24-bookworm-slim" \
+  org.opencontainers.image.base.digest="${OPENCLAW_NODE_BOOKWORM_SLIM_DIGEST}"
+
+# ── Stage 3: Runtime ────────────────────────────────────────────
+FROM base-${OPENCLAW_VARIANT}
+ARG OPENCLAW_VARIANT
+ARG OPENCLAW_DOCKER_APT_UPGRADE
+
+# OCI base-image metadata for downstream image consumers.
+# If you change these annotations, also update:
+# - docs/install/docker.md ("Base image metadata" section)
+# - https://docs.openclaw.ai/install/docker
 LABEL org.opencontainers.image.source="https://github.com/openclaw/openclaw" \
   org.opencontainers.image.url="https://openclaw.ai" \
   org.opencontainers.image.documentation="https://docs.openclaw.ai/install/docker" \
@@ -107,22 +129,21 @@ LABEL org.opencontainers.image.source="https://github.com/openclaw/openclaw" \
 
 WORKDIR /app
 
-# Install system utilities (from upstream) + our custom additions.
-# python3/pip: skill scripts; sudo: runtime admin; openssh-client: SSH skills.
+# Install system utilities present in bookworm but missing in bookworm-slim.
+# On the full bookworm image these are already installed (apt-get is a no-op).
+# Smoke workflows can opt out of distro upgrades to cut repeated CI time while
+# keeping the default runtime image behavior unchanged.
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
     apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends && \
+    if [ "${OPENCLAW_DOCKER_APT_UPGRADE}" != "0" ]; then \
+      DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends; \
+    fi && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      procps hostname curl git openssl \
-      jq file unzip bc \
-      python3 python3-pip sudo openssh-client && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+      procps hostname curl git lsof openssl
 
 RUN chown node:node /app
 
-# Copy pruned runtime artifacts (no dev deps, no .d.ts/.map files)
 COPY --from=runtime-assets --chown=node:node /app/dist ./dist
 COPY --from=runtime-assets --chown=node:node /app/node_modules ./node_modules
 COPY --from=runtime-assets --chown=node:node /app/package.json .
@@ -130,6 +151,10 @@ COPY --from=runtime-assets --chown=node:node /app/openclaw.mjs .
 COPY --from=runtime-assets --chown=node:node /app/extensions ./extensions
 COPY --from=runtime-assets --chown=node:node /app/skills ./skills
 COPY --from=runtime-assets --chown=node:node /app/docs ./docs
+
+# In npm-installed Docker images, prefer the copied source extension tree for
+# bundled discovery so package metadata that points at source entries stays valid.
+ENV OPENCLAW_BUNDLED_PLUGINS_DIR=/app/extensions
 
 # Keep pnpm available in the runtime image for container-local workflows.
 # Use a shared Corepack home so the non-root `node` user does not need a
@@ -148,21 +173,8 @@ RUN install -d -m 0755 "$COREPACK_HOME" && \
     done && \
     chmod -R a+rX "$COREPACK_HOME"
 
-# Install Docker CLI unconditionally (needed for sandbox/DinD).
-# Uses Debian bookworm repo (base is now node:24-bookworm).
-RUN install -m 0755 -d /etc/apt/keyrings && \
-    curl -fsSL https://download.docker.com/linux/debian/gpg \
-      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
-    chmod a+r /etc/apt/keyrings/docker.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
-      > /etc/apt/sources.list.d/docker.list && \
-    apt-get update && \
-    apt-get install -y docker-ce-cli && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
-
-# Install additional system packages needed by skills or extensions.
-# Example: docker build --build-arg OPENCLAW_DOCKER_APT_PACKAGES="wget" .
+# Install additional system packages needed by your skills or extensions.
+# Example: docker build --build-arg OPENCLAW_DOCKER_APT_PACKAGES="python3 wget" .
 ARG OPENCLAW_DOCKER_APT_PACKAGES=""
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
@@ -187,14 +199,37 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
       chown -R node:node /home/node/.cache/ms-playwright; \
     fi
 
-# Normalize extension paths so plugin safety checks do not reject
-# world-writable directories inherited from source file modes.
-RUN for dir in /app/extensions /app/.agent /app/.agents; do \
-      if [ -d "$dir" ]; then \
-        find "$dir" -type d -exec chmod 755 {} +; \
-        find "$dir" -type f -exec chmod 644 {} +; \
-      fi; \
-    done
+# Optionally install Docker CLI for sandbox container management.
+# Build with: docker build --build-arg OPENCLAW_INSTALL_DOCKER_CLI=1 ...
+# Adds ~50MB. Only the CLI is installed — no Docker daemon.
+# Required for agents.defaults.sandbox to function in Docker deployments.
+ARG OPENCLAW_INSTALL_DOCKER_CLI=""
+ARG OPENCLAW_DOCKER_GPG_FINGERPRINT="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
+RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
+    if [ -n "$OPENCLAW_INSTALL_DOCKER_CLI" ]; then \
+      apt-get update && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg && \
+      install -m 0755 -d /etc/apt/keyrings && \
+      # Verify Docker apt signing key fingerprint before trusting it as a root key.
+      # Update OPENCLAW_DOCKER_GPG_FINGERPRINT when Docker rotates release keys.
+      curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/docker.gpg.asc && \
+      expected_fingerprint="$(printf '%s' "$OPENCLAW_DOCKER_GPG_FINGERPRINT" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')" && \
+      actual_fingerprint="$(gpg --batch --show-keys --with-colons /tmp/docker.gpg.asc | awk -F: '$1 == "fpr" { print toupper($10); exit }')" && \
+      if [ -z "$actual_fingerprint" ] || [ "$actual_fingerprint" != "$expected_fingerprint" ]; then \
+        echo "ERROR: Docker apt key fingerprint mismatch (expected $expected_fingerprint, got ${actual_fingerprint:-<empty>})" >&2; \
+        exit 1; \
+      fi && \
+      gpg --dearmor -o /etc/apt/keyrings/docker.gpg /tmp/docker.gpg.asc && \
+      rm -f /tmp/docker.gpg.asc && \
+      chmod a+r /etc/apt/keyrings/docker.gpg && \
+      printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable\n' \
+        "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/docker.list && \
+      apt-get update && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        docker-ce-cli docker-compose-plugin; \
+    fi
 
 # Expose the CLI binary without requiring npm global writes as non-root.
 RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
@@ -202,26 +237,10 @@ RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
 
 ENV NODE_ENV=production
 
-# Add node user to docker group for host docker access (GID set at runtime).
-# Also configure sudo access for the node user.
-RUN groupadd -g 999 docker || true && \
-    usermod -aG docker node && \
-    echo "node ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-
 # Security hardening: Run as non-root user
+# The node:24-bookworm image includes a 'node' user (uid 1000)
+# This reduces the attack surface by preventing container escape via root privileges
 USER node
-
-# Setup npm global prefix for non-root skill/MCP installs
-RUN mkdir -p /home/node/.npm-global && \
-    npm config set prefix /home/node/.npm-global
-ENV PATH="/home/node/.openclaw/bin:/home/node/.npm-global/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-# Install skill dependencies: Bitwarden CLI (vaultwarden skill), Gemini CLI
-RUN npm install -g @bitwarden/cli @google/gemini-cli
-
-# Install Python packages for skills
-# pypdf: PDF text extraction (gamatecha-workspace skill — Drive report summarization)
-RUN pip install --break-system-packages --no-cache-dir pypdf
 
 # Start gateway server with default config.
 # Binds to loopback (127.0.0.1) by default for security.
