@@ -54,8 +54,15 @@ function resolveMentionPatterns(cfg: OpenClawConfig | undefined, agentId?: strin
   return derived.length > 0 ? derived : [];
 }
 
-export function buildMentionRegexes(cfg: OpenClawConfig | undefined, agentId?: string): RegExp[] {
-  const patterns = normalizeMentionPatterns(resolveMentionPatterns(cfg, agentId));
+export function buildMentionRegexes(
+  cfg: OpenClawConfig | undefined,
+  agentId?: string,
+  overridePatterns?: string[],
+): RegExp[] {
+  const patterns =
+    overridePatterns !== undefined
+      ? normalizeMentionPatterns(overridePatterns)
+      : normalizeMentionPatterns(resolveMentionPatterns(cfg, agentId));
   if (patterns.length === 0) {
     return [];
   }

@@ -116,7 +116,15 @@ export async function resolveTelegramInboundBody(params: {
     logger,
   } = params;
   const botUsername = primaryCtx.me?.username?.toLowerCase();
-  const mentionRegexes = buildMentionRegexes(cfg, routeAgentId);
+  const channelMentionPatterns =
+    topicConfig && Object.hasOwn(topicConfig, "mentionPatterns")
+      ? (topicConfig.mentionPatterns ?? [])
+      : groupConfig &&
+          "mentionPatterns" in groupConfig &&
+          Object.hasOwn(groupConfig, "mentionPatterns")
+        ? (groupConfig.mentionPatterns ?? [])
+        : undefined;
+  const mentionRegexes = buildMentionRegexes(cfg, routeAgentId, channelMentionPatterns);
   const messageTextParts = getTelegramTextParts(msg);
   const allowForCommands = isGroup ? effectiveGroupAllow : effectiveDmAllow;
   const senderAllowedForCommands = isSenderAllowed({

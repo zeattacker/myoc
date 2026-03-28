@@ -198,6 +198,8 @@ export type TelegramAccountConfig = {
 
 export type TelegramTopicConfig = {
   requireMention?: boolean;
+  /** Override mention patterns for this topic. Empty array disables name-based matching. */
+  mentionPatterns?: string[];
   /** Per-topic override for group message policy (open|disabled|allowlist). */
   groupPolicy?: GroupPolicy;
   /** If specified, only load these skills for this topic. Omit = all skills; empty = no skills. */
@@ -216,6 +218,8 @@ export type TelegramTopicConfig = {
 
 export type TelegramGroupConfig = {
   requireMention?: boolean;
+  /** Override mention patterns for this group. Empty array disables name-based matching. */
+  mentionPatterns?: string[];
   /** Per-group override for group message policy (open|disabled|allowlist). */
   groupPolicy?: GroupPolicy;
   /** Optional tool policy overrides for this group. */

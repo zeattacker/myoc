@@ -71,6 +71,7 @@ const SlackCapabilitiesSchema = z.union([
 export const TelegramTopicSchema = z
   .object({
     requireMention: z.boolean().optional(),
+    mentionPatterns: z.array(z.string()).optional(),
     disableAudioPreflight: z.boolean().optional(),
     groupPolicy: GroupPolicySchema.optional(),
     skills: z.array(z.string()).optional(),
@@ -84,6 +85,7 @@ export const TelegramTopicSchema = z
 export const TelegramGroupSchema = z
   .object({
     requireMention: z.boolean().optional(),
+    mentionPatterns: z.array(z.string()).optional(),
     disableAudioPreflight: z.boolean().optional(),
     groupPolicy: GroupPolicySchema.optional(),
     tools: ToolPolicySchema,
