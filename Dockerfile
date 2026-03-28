@@ -1,60 +1,22 @@
 # syntax=docker/dockerfile:1.7
 
 # =============================================================================
-# Multi-stage build: QMD CUDA builder + upstream OpenClaw pattern
+# Multi-stage build: upstream OpenClaw pattern (no embedded QMD/CUDA)
 #
-# Opt-in extension dependencies at build time (space-separated directory names).
-# Example: docker build --build-arg OPENCLAW_EXTENSIONS="diagnostics-otel matrix" .
+# QMD and Docling run as standalone Docker containers — see ../docker-compose.yml
 #
-# Stage 1: qmd_builder     — compile QMD with CUDA (our custom stage)
-# Stage 2: ext-deps        — extract extension package.json (from upstream)
-# Stage 3: build           — compile TypeScript + bundle UI (from upstream)
-# Stage 4: runtime-assets  — prune dev deps + strip build metadata (from upstream v2026.3.13)
-# Stage 5: base-cuda       — CUDA runtime base image (our custom)
-# Stage 6: runtime         — final image (hybrid: upstream layout + CUDA + QMD)
+# Stage 1: ext-deps        — extract extension package.json
+# Stage 2: build           — compile TypeScript + bundle UI
+# Stage 3: runtime-assets  — prune dev deps + strip build metadata
+# Stage 4: runtime         — final image (node:24-bookworm, no CUDA)
 #
 # Produces a minimal runtime image without build tools, source code, or Bun.
-# Works with Docker, Buildx, and Podman.
 # =============================================================================
 
 ARG OPENCLAW_EXTENSIONS=""
 ARG OPENCLAW_NODE_BOOKWORM_IMAGE="node:24-bookworm@sha256:3a09aa6354567619221ef6c45a5051b671f953f0a1924d1f819ffb236e520e6b"
-ARG OPENCLAW_NODE_BOOKWORM_DIGEST="sha256:3a09aa6354567619221ef6c45a5051b671f953f0a1924d1f819ffb236e520e6b"
 
-# ── Stage 1: QMD CUDA Builder ───────────────────────────────────
-# Build QMD with CUDA for Blackwell GB10 (sm_121).
-# Uses CUDA devel image to compile node-llama-cpp from source.
-# Build contexts required:
-#   qmd_src   = ~/Documents/Projects/qmd
-#   llama_src = ~/Documents/Projects/llm/llcp/llama.cpp
-FROM nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04 AS qmd_builder
-
-# Install Node.js 24 + build dependencies for node-llama-cpp CUDA compilation
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl gnupg python3 make g++ cmake \
-    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /qmd
-
-# Copy QMD source (build context: qmd_src)
-COPY --from=qmd_src . .
-
-# Install npm dependencies (downloads prebuilt ARM64 CPU binary initially)
-RUN npm install
-
-# Use local llama.cpp repo instead of re-downloading from HuggingFace
-COPY --from=llama_src . /qmd/node_modules/node-llama-cpp/llama/llama.cpp
-
-# Recompile node-llama-cpp with CUDA targeting Blackwell sm_121 (GB10 = CC 12.1)
-RUN CMAKE_CUDA_ARCHITECTURES=121 npx --no node-llama-cpp source build --gpu cuda
-
-# Build TypeScript -> dist/qmd.js (adds #!/usr/bin/env node shebang automatically)
-RUN npm run build
-
-
-# ── Stage 2: Extension deps ─────────────────────────────────────
+# ── Stage 1: Extension deps ─────────────────────────────────────
 FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS ext-deps
 ARG OPENCLAW_EXTENSIONS
 COPY extensions /tmp/extensions
@@ -68,7 +30,7 @@ RUN mkdir -p /out && \
     done
 
 
-# ── Stage 3: Build ──────────────────────────────────────────────
+# ── Stage 2: Build ──────────────────────────────────────────────
 FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS build
 
 # Install Bun (required for build scripts). Retry the whole bootstrap flow to
@@ -125,48 +87,15 @@ RUN pnpm build:docker
 ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm ui:build
 
-# ── Stage 4: Runtime assets (prune dev deps) ─────────────────────
+# ── Stage 3: Runtime assets (prune dev deps) ─────────────────────
 # Prune dev dependencies and strip build-only metadata before copying
 # runtime assets into the final image.
 FROM build AS runtime-assets
 RUN CI=true pnpm prune --prod && \
     find dist -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' \) -delete
 
-# ── Stage 5: CUDA runtime base ──────────────────────────────────
-# Uses CUDA runtime instead of upstream's node:24-bookworm for GPU inference.
-# Ubuntu 24.04 Noble (glibc 2.39) is forward-compatible with bookworm (2.36) builds.
-FROM nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04 AS base-cuda
-ARG OPENCLAW_NODE_BOOKWORM_DIGEST
-
-LABEL org.opencontainers.image.base.name="nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04" \
-  org.opencontainers.image.base.digest="${OPENCLAW_NODE_BOOKWORM_DIGEST}"
-
-# Install Node.js 24.x from NodeSource (CUDA image doesn't include it)
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg && \
-    mkdir -p /etc/apt/keyrings && \
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-      | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
-      > /etc/apt/sources.list.d/nodesource.list && \
-    apt-get update && \
-    apt-get install -y nodejs && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Create node user (uid 1000) — same as official node Docker image.
-# Ubuntu 24.04 may already have uid/gid 1000 used by 'ubuntu' user — rename it.
-RUN if getent passwd 1000 > /dev/null 2>&1; then \
-      usermod -l node -d /home/node -m $(getent passwd 1000 | cut -d: -f1) && \
-      groupmod -n node $(getent group 1000 | cut -d: -f1) 2>/dev/null || true; \
-    else \
-      groupadd --gid 1000 node && \
-      useradd --uid 1000 --gid 1000 --shell /bin/bash --create-home node; \
-    fi
-
-
-# ── Stage 6: Runtime ────────────────────────────────────────────
-FROM base-cuda
+# ── Stage 4: Runtime ────────────────────────────────────────────
+FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS runtime
 
 # OCI metadata
 LABEL org.opencontainers.image.source="https://github.com/openclaw/openclaw" \
@@ -174,20 +103,20 @@ LABEL org.opencontainers.image.source="https://github.com/openclaw/openclaw" \
   org.opencontainers.image.documentation="https://docs.openclaw.ai/install/docker" \
   org.opencontainers.image.licenses="MIT" \
   org.opencontainers.image.title="OpenClaw" \
-  org.opencontainers.image.description="OpenClaw gateway and CLI runtime container image (CUDA GPU)"
+  org.opencontainers.image.description="OpenClaw gateway and CLI runtime container image"
 
 WORKDIR /app
 
 # Install system utilities (from upstream) + our custom additions.
-# python3/pip: skill scripts; sudo: runtime admin; openssh-client: SSH skills;
-# libgomp1: GNU OpenMP runtime required by CUDA-compiled node-llama-cpp.
+# python3/pip: skill scripts; sudo: runtime admin; openssh-client: SSH skills.
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       procps hostname curl git openssl \
-      python3 python3-pip sudo openssh-client libgomp1 && \
+      jq file unzip bc \
+      python3 python3-pip sudo openssh-client && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
@@ -220,12 +149,12 @@ RUN install -d -m 0755 "$COREPACK_HOME" && \
     chmod -R a+rX "$COREPACK_HOME"
 
 # Install Docker CLI unconditionally (needed for sandbox/DinD).
-# Uses Ubuntu noble repo (not Debian bookworm) since base is Ubuntu 24.04.
+# Uses Debian bookworm repo (base is now node:24-bookworm).
 RUN install -m 0755 -d /etc/apt/keyrings && \
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    curl -fsSL https://download.docker.com/linux/debian/gpg \
       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
       > /etc/apt/sources.list.d/docker.list && \
     apt-get update && \
     apt-get install -y docker-ce-cli && \
@@ -271,15 +200,6 @@ RUN for dir in /app/extensions /app/.agent /app/.agents; do \
 RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
  && chmod 755 /app/openclaw.mjs
 
-# Install compiled QMD from builder stage.
-# /opt/qmd/dist/qmd.js has #!/usr/bin/env node shebang — directly executable.
-# node_modules contains node-llama-cpp compiled with CUDA sm_121 for Blackwell GB10.
-COPY --chown=node:node --from=qmd_builder /qmd/dist /opt/qmd/dist
-COPY --chown=node:node --from=qmd_builder /qmd/node_modules /opt/qmd/node_modules
-COPY --chown=node:node --from=qmd_builder /qmd/package.json /opt/qmd/package.json
-RUN ln -sf /opt/qmd/dist/qmd.js /usr/local/bin/qmd \
- && chmod 755 /opt/qmd/dist/qmd.js
-
 ENV NODE_ENV=production
 
 # Add node user to docker group for host docker access (GID set at runtime).
@@ -296,8 +216,8 @@ RUN mkdir -p /home/node/.npm-global && \
     npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.openclaw/bin:/home/node/.npm-global/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-# Install skill dependencies: Bitwarden CLI (vaultwarden skill), MCPorter (mcporter skill)
-RUN npm install -g @bitwarden/cli mcporter @google/gemini-cli
+# Install skill dependencies: Bitwarden CLI (vaultwarden skill), Gemini CLI
+RUN npm install -g @bitwarden/cli @google/gemini-cli
 
 # Install Python packages for skills
 # pypdf: PDF text extraction (gamatecha-workspace skill — Drive report summarization)

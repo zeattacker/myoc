@@ -1,0 +1,62 @@
+services:
+  qwen3-asr:
+    image: vllm/vllm-openai:latest
+    container_name: qwen3-asr
+    ports:
+      - "8200:8000"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command:
+      - Qwen/Qwen3-ASR-1.7B
+      - --dtype=bfloat16
+      - --max-model-len=4096
+      - --gpu-memory-utilization=0.15
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  diarizer:
+    build:
+      context: ./diarizer
+    container_name: diarizer
+    ports:
+      - "8201:8000"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+      - QWEN3_ASR_URL=http://qwen3-asr:8000
+      - NVIDIA_DISABLE_REQUIRE=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      qwen3-asr:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+volumes:
+  hf-cache:

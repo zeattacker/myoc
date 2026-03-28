@@ -1,0 +1,29 @@
+services:
+  docling:
+    build:
+      context: .
+    container_name: docling
+    ports:
+      - "8202:8000"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    environment:
+      - NVIDIA_DISABLE_REQUIRE=1
+      - DOCLING_OCR_LANG=eng,ind
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+volumes:
+  hf-cache:
