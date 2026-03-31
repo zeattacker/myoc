@@ -1,6 +1,38 @@
-# Repository Guidelines
+# CLAUDE.md
 
-- Repo: https://github.com/openclaw/openclaw
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What Is This
+
+OpenClaw is a self-hosted, multi-channel AI assistant gateway. It routes messages between 24+ messaging platforms (Telegram, Discord, Slack, WhatsApp, Signal, iMessage, Matrix, etc.) and AI model providers (Anthropic, OpenAI, Google, local LLMs, etc.) through a central TypeScript gateway with a plugin/extension architecture.
+
+- **Repo**: https://github.com/openclaw/openclaw
+- **Stack**: TypeScript (ESM, strict), Node 22+, pnpm 10.x workspaces
+- **Core framework**: Hono (HTTP/WS server), Vitest (testing), Oxlint/Oxfmt (lint/format), tsdown (bundler)
+
+## High-Level Architecture
+
+```
+Gateway (src/)
+├── Channels (src/telegram, src/discord, src/slack, src/signal, src/imessage, src/web, src/routing)
+│   └── Extension channels (extensions/msteams, extensions/matrix, extensions/zalo, ...)
+├── Providers (extensions/anthropic, extensions/openai, extensions/google, extensions/ollama, ...)
+├── Plugin SDK (src/plugin-sdk/*.ts — 150+ subpath exports, the public API for extensions)
+├── Agents (src/agents/ — multi-agent runtime with per-agent memory/sessions)
+├── CLI (src/cli/ — 150+ commands, entry at src/entry.ts)
+├── Gateway server (src/gateway/ — Hono-based WebSocket control plane)
+├── Skills (skills/ — 50+ tool integrations: GitHub, Slack, browser, cron, etc.)
+├── Media pipeline (src/media/, src/media-understanding/, src/tts/)
+├── Canvas/A2UI (src/canvas-host/ — agent-driven UI)
+└── Native apps (apps/macos, apps/ios, apps/android — Swift/Kotlin companions)
+```
+
+**Key extension points**: Channels and providers are plugins under `extensions/` (80+ total). Each is a pnpm workspace package with metadata in `package.json` under the `openclaw` key. Extensions import only from `openclaw/plugin-sdk/*` — never from core `src/` directly.
+
+**Config**: `~/.openclaw/openclaw.json` (schema at `src/config/types.*.ts`). Dashboard at `http://localhost:18789/?token=<token>`.
+
+## Repository Rules
+
 - In chat replies, file references must be repo-root relative only (example: `extensions/bluebubbles/src/channel.ts:80`); never absolute paths or `~/...`.
 - Do not edit files covered by security-focused `CODEOWNERS` rules unless a listed owner explicitly asked for the change or is already reviewing it with you. Treat those paths as restricted surfaces, not drive-by cleanup.
 
@@ -264,7 +296,7 @@
   - Only ask when changes are semantic (logic/data/behavior).
 - **Multi-agent safety:** focus reports on your edits; avoid guard-rail disclaimers unless truly blocked; when multiple agents touch the same file, continue if safe; end with a brief “other files present” note only if relevant.
 - Bug investigations: read source code of relevant npm dependencies and all related local code before concluding; aim for high-confidence root cause.
-- Code style: add brief comments for tricky logic; keep files under ~500 LOC when feasible (split/refactor as needed).
+- Code style: add brief comments for tricky logic; keep files under ~700 LOC when feasible (split/refactor as needed).
 - Tool schema guardrails (google-antigravity): avoid `Type.Union` in tool input schemas; no `anyOf`/`oneOf`/`allOf`. Use `stringEnum`/`optionalStringEnum` (Type.Unsafe enum) for string lists, and `Type.Optional(...)` instead of `... | null`. Keep top-level tool schema as `type: "object"` with `properties`.
 - Tool schema guardrails: avoid raw `format` property names in tool schemas; some validators treat `format` as a reserved keyword and reject the schema.
 - Never send streaming/partial replies to external messaging surfaces (WhatsApp, Telegram); only final replies should be delivered there. Streaming/tool events may still go to internal UIs/control channel.

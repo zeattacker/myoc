@@ -52,6 +52,12 @@ export function resolveToolCallArgumentsEncoding(
   return extractModelCompat(modelOrCompat)?.toolCallArgumentsEncoding;
 }
 
+export function resolveTextToolCallParserCompat(
+  modelOrCompat: { compat?: unknown } | ModelCompatConfig | undefined,
+): string | undefined {
+  return extractModelCompat(modelOrCompat)?.textToolCallParser;
+}
+
 export function resolveUnsupportedToolSchemaKeywords(
   modelOrCompat: { compat?: unknown } | ModelCompatConfig | undefined,
 ): ReadonlySet<string> {

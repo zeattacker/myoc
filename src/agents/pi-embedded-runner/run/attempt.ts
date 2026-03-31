@@ -27,7 +27,10 @@ import {
   resolveTelegramReactionLevel,
 } from "../../../plugin-sdk/telegram-runtime.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
-import { resolveToolCallArgumentsEncoding } from "../../../plugins/provider-model-compat.js";
+import {
+  resolveTextToolCallParserCompat,
+  resolveToolCallArgumentsEncoding,
+} from "../../../plugins/provider-model-compat.js";
 import { isSubagentSessionKey } from "../../../routing/session-key.js";
 import { buildTtsSystemPromptHint } from "../../../tts/tts.js";
 import { resolveUserPath } from "../../../utils.js";
@@ -154,6 +157,7 @@ import {
   waitForSessionsYieldAbortSettle,
 } from "./attempt.sessions-yield.js";
 import { wrapStreamFnHandleSensitiveStopReason } from "./attempt.stop-reason-recovery.js";
+import { wrapStreamFnExtractTextToolCalls } from "./attempt.text-tool-call-extraction.js";
 import {
   appendAttemptCacheTtlIfNeeded,
   composeSystemPromptWithHookContext,
@@ -178,6 +182,7 @@ import {
 } from "./compaction-timeout.js";
 import { pruneProcessedHistoryImages } from "./history-image-prune.js";
 import { detectAndLoadPromptImages } from "./images.js";
+import { resolveTextToolCallParserName } from "./text-tool-parsers/index.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 
 export {
@@ -213,6 +218,7 @@ export {
   wrapStreamFnSanitizeMalformedToolCalls,
   wrapStreamFnTrimToolCallNames,
 } from "./attempt.tool-call-normalization.js";
+export { wrapStreamFnExtractTextToolCalls } from "./attempt.text-tool-call-extraction.js";
 
 const MAX_BTW_SNAPSHOT_MESSAGES = 100;
 
@@ -1030,6 +1036,18 @@ export async function runEmbeddedAttempt(
         }
         return innerStreamFn(model, context, options);
       };
+
+      // Text-based tool call extraction for models that output tool calls as text
+      // (not via native API tool_calls). Common with small/local models (3B-30B).
+      const textToolCallParser =
+        resolveTextToolCallParserCompat(params.model) ??
+        resolveTextToolCallParserName(params.modelId);
+      if (textToolCallParser) {
+        activeSession.agent.streamFn = wrapStreamFnExtractTextToolCalls(
+          activeSession.agent.streamFn,
+          textToolCallParser,
+        );
+      }
 
       // Some models emit tool names with surrounding whitespace (e.g. " read ").
       // pi-agent-core dispatches tool calls with exact string matching, so normalize

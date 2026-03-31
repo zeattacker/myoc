@@ -14799,6 +14799,12 @@ export const GENERATED_BUNDLED_PLUGIN_METADATA = [
                     requireMention: {
                       type: "boolean",
                     },
+                    mentionPatterns: {
+                      type: "array",
+                      items: {
+                        type: "string",
+                      },
+                    },
                     disableAudioPreflight: {
                       type: "boolean",
                     },
@@ -14895,6 +14901,12 @@ export const GENERATED_BUNDLED_PLUGIN_METADATA = [
                         properties: {
                           requireMention: {
                             type: "boolean",
+                          },
+                          mentionPatterns: {
+                            type: "array",
+                            items: {
+                              type: "string",
+                            },
                           },
                           disableAudioPreflight: {
                             type: "boolean",
@@ -15108,6 +15120,12 @@ export const GENERATED_BUNDLED_PLUGIN_METADATA = [
                         properties: {
                           requireMention: {
                             type: "boolean",
+                          },
+                          mentionPatterns: {
+                            type: "array",
+                            items: {
+                              type: "string",
+                            },
                           },
                           disableAudioPreflight: {
                             type: "boolean",
@@ -15750,6 +15768,12 @@ export const GENERATED_BUNDLED_PLUGIN_METADATA = [
                           requireMention: {
                             type: "boolean",
                           },
+                          mentionPatterns: {
+                            type: "array",
+                            items: {
+                              type: "string",
+                            },
+                          },
                           disableAudioPreflight: {
                             type: "boolean",
                           },
@@ -15846,6 +15870,12 @@ export const GENERATED_BUNDLED_PLUGIN_METADATA = [
                               properties: {
                                 requireMention: {
                                   type: "boolean",
+                                },
+                                mentionPatterns: {
+                                  type: "array",
+                                  items: {
+                                    type: "string",
+                                  },
                                 },
                                 disableAudioPreflight: {
                                   type: "boolean",
@@ -16059,6 +16089,12 @@ export const GENERATED_BUNDLED_PLUGIN_METADATA = [
                               properties: {
                                 requireMention: {
                                   type: "boolean",
+                                },
+                                mentionPatterns: {
+                                  type: "array",
+                                  items: {
+                                    type: "string",
+                                  },
                                 },
                                 disableAudioPreflight: {
                                   type: "boolean",
