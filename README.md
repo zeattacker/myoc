@@ -70,7 +70,7 @@ Multi-stage Dockerfile with CUDA support for running on NVIDIA GPUs (tested on D
 
 ### Self-Learning Extension System
 
-Extension at `~/.openclaw/extensions/self-learning/` with 4 phases:
+Extension at [zeattacker/openclaw-self-learning](https://github.com/zeattacker/openclaw-self-learning) with 4 phases:
 
 | Phase    | Status   | Description                                                               |
 | -------- | -------- | ------------------------------------------------------------------------- |
