@@ -1,4 +1,4 @@
-# 🦞 OpenClaw — Personal AI Assistant
+# 🦞 OpenClaw — Personal AI Assistant (Enhanced Fork)
 
 <p align="center">
     <picture>
@@ -8,15 +8,105 @@
 </p>
 
 <p align="center">
-  <strong>EXFOLIATE! EXFOLIATE!</strong>
+  <strong>Enhanced fork with local model support, proactive compaction, and self-learning capabilities</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/openclaw/openclaw/actions/workflows/ci.yml?branch=main"><img src="https://img.shields.io/github/actions/workflow/status/openclaw/openclaw/ci.yml?branch=main&style=for-the-badge" alt="CI status"></a>
-  <a href="https://github.com/openclaw/openclaw/releases"><img src="https://img.shields.io/github/v/release/openclaw/openclaw?include_prereleases&style=for-the-badge" alt="GitHub release"></a>
-  <a href="https://discord.gg/clawd"><img src="https://img.shields.io/discord/1456350064065904867?label=Discord&logo=discord&logoColor=white&color=5865F2&style=for-the-badge" alt="Discord"></a>
+  <a href="https://github.com/openclaw/openclaw"><img src="https://img.shields.io/badge/upstream-openclaw%2Fopenclaw-blue?style=for-the-badge" alt="Upstream"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 </p>
+
+> **This is an enhanced fork of [openclaw/openclaw](https://github.com/openclaw/openclaw).**
+> The `main` branch tracks upstream 1:1. All enhancements live on the `dev` branch.
+
+## What This Fork Adds
+
+This fork extends OpenClaw with features ported from [Hermes Agent](https://github.com/NousResearch/hermes-agent) and original enhancements for local/self-hosted deployments, particularly on NVIDIA hardware.
+
+### Text Tool Call Parsers for Local Models
+
+11 model-specific parsers that extract tool calls from raw text output — enabling tool use with local models that lack native API function calling.
+
+| Parser          | Models                      | Format                                      |
+| --------------- | --------------------------- | ------------------------------------------- |
+| `hermes`        | Hermes, Nemotron            | `<tool_call>` + JSON                        |
+| `llama`         | Llama 3/4                   | Bare JSON objects                           |
+| `deepseek_v3`   | DeepSeek V3, DeepSeek Coder | Unicode tokens + JSON code block            |
+| `deepseek_v3_1` | DeepSeek V3.1               | Unicode tokens (simplified)                 |
+| `mistral`       | Mistral, Mixtral            | `[TOOL_CALLS]` token + JSON                 |
+| `qwen3_coder`   | Qwen3-Coder                 | XML-style `<function=>`/`<parameter=>`      |
+| `qwen`          | Qwen 2.5 (non-coder)        | Same as Hermes                              |
+| `glm45`         | GLM 4.5, GLM-4-MoE          | `<arg_key>`/`<arg_value>` pairs             |
+| `glm47`         | GLM 4.7                     | Extended GLM 4.5 with newline tolerance     |
+| `kimi_k2`       | Kimi K2                     | Section delimiters with function ID parsing |
+| `longcat`       | Longcat Flash Chat          | `<longcat_tool_call>` + JSON                |
+
+Parsers auto-detect from model ID — no manual configuration needed. Set `compat.textToolCallParser` in model config to override.
+
+### Proactive Context Compaction
+
+Compacts session context **before** overflow occurs, rather than waiting for a context overflow error from the model API.
+
+```jsonc
+// ~/.openclaw/openclaw.json
+{
+  "agents": {
+    "defaults": {
+      "compaction": {
+        "proactiveThreshold": 0.6, // compact at 60% of context window
+      },
+    },
+  },
+}
+```
+
+- Configurable threshold (0-1, default 0.50, set to 0 to disable)
+- Cooldown prevents compaction thrashing (15% new content required between compactions)
+- Integrates with existing compaction hooks and context engine
+
+### CUDA-Optimized Docker
+
+Multi-stage Dockerfile with CUDA support for running on NVIDIA GPUs (tested on DGX Spark / GB10 with CUDA 13, SM 12.1 Blackwell).
+
+### Self-Learning Extension System
+
+Extension at `~/.openclaw/extensions/self-learning/` with 4 phases:
+
+| Phase    | Status   | Description                                                               |
+| -------- | -------- | ------------------------------------------------------------------------- |
+| Phase 1  | Active   | Agent-created skills (Hermes-compatible SKILL.md format)                  |
+| Phase 2A | Active   | Cross-agent memory recall via OpenViking                                  |
+| Phase 3  | Active   | Structured compaction template (Goal/Progress/Decisions/Files/Next Steps) |
+| Phase 4  | Disabled | Trajectory capture for fine-tuning (JSONL ShareGPT format)                |
+
+### Custom Skills
+
+- **memory-rounds** — 5-phase Socratic memory audit: detect staleness, duplicates, knowledge gaps, then consolidate
+- **bonding-session** — Nightly Socratic dialogue for deepening user understanding, adaptive question generation
+
+### Other Enhancements
+
+- SearXNG as native web search provider
+- Per-topic and per-group Telegram mention pattern overrides
+- Separated CUDA/QMD/Docling/Whisper into standalone containers
+
+## Keeping Up with Upstream
+
+```bash
+# Fetch upstream changes
+git fetch upstream main
+
+# Update main to match upstream
+git checkout main
+git reset --hard upstream/main
+git push origin main --force
+
+# Rebase dev onto updated main
+git checkout dev
+git rebase main
+```
+
+---
 
 **OpenClaw** is a _personal AI assistant_ you run on your own devices.
 It answers you on the channels you already use (WhatsApp, Telegram, Slack, Discord, Google Chat, Signal, iMessage, BlueBubbles, IRC, Microsoft Teams, Matrix, Feishu, LINE, Mattermost, Nextcloud Talk, Nostr, Synology Chat, Tlon, Twitch, Zalo, Zalo Personal, WeChat, WebChat). It can speak and listen on macOS/iOS/Android, and can render a live Canvas you control. The Gateway is just the control plane — the product is the assistant.
