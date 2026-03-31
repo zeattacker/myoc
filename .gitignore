@@ -101,8 +101,10 @@ USER.md
 /local/
 package-lock.json
 .claude/
+.claude-flow/data/
 .agent/
 skills-lock.json
+PLAN-*.md
 
 # Local iOS signing overrides
 apps/ios/LocalSigning.xcconfig
