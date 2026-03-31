@@ -6,9 +6,15 @@
  */
 
 import { DeepSeekV3ToolCallParser } from "./deepseek-v3.js";
+import { DeepSeekV31ToolCallParser } from "./deepseek-v31.js";
+import { Glm45ToolCallParser } from "./glm45.js";
+import { Glm47ToolCallParser } from "./glm47.js";
 import { HermesToolCallParser } from "./hermes.js";
+import { KimiK2ToolCallParser } from "./kimi-k2.js";
 import { LlamaToolCallParser } from "./llama.js";
+import { LongcatToolCallParser } from "./longcat.js";
 import { MistralToolCallParser } from "./mistral.js";
+import { QwenToolCallParser } from "./qwen.js";
 import { Qwen3CoderToolCallParser } from "./qwen3-coder.js";
 import type { TextToolCallParser } from "./types.js";
 
@@ -16,8 +22,14 @@ const PARSER_REGISTRY = new Map<string, () => TextToolCallParser>([
   ["hermes", () => new HermesToolCallParser()],
   ["llama", () => new LlamaToolCallParser()],
   ["deepseek_v3", () => new DeepSeekV3ToolCallParser()],
+  ["deepseek_v3_1", () => new DeepSeekV31ToolCallParser()],
   ["mistral", () => new MistralToolCallParser()],
   ["qwen3_coder", () => new Qwen3CoderToolCallParser()],
+  ["qwen", () => new QwenToolCallParser()],
+  ["glm45", () => new Glm45ToolCallParser()],
+  ["glm47", () => new Glm47ToolCallParser()],
+  ["kimi_k2", () => new KimiK2ToolCallParser()],
+  ["longcat", () => new LongcatToolCallParser()],
 ]);
 
 // Model ID patterns → parser name
@@ -25,10 +37,16 @@ const MODEL_PARSER_PATTERNS: [RegExp, string][] = [
   [/hermes/i, "hermes"],
   [/nemotron/i, "hermes"],
   [/llama[-_.]?[34]/i, "llama"],
+  [/deepseek[-_.]?v3[._-]?1/i, "deepseek_v3_1"],
   [/deepseek[-_.]?v3/i, "deepseek_v3"],
   [/deepseek[-_.]?coder/i, "deepseek_v3"],
   [/mistral|mixtral/i, "mistral"],
   [/qwen.*coder/i, "qwen3_coder"],
+  [/qwen/i, "qwen"],
+  [/glm[-_.]?4[._-]?7/i, "glm47"],
+  [/glm[-_.]?4[._-]?5|glm[-_.]?4[-_.]?moe/i, "glm45"],
+  [/kimi[-_.]?k2/i, "kimi_k2"],
+  [/longcat/i, "longcat"],
 ];
 
 export function getTextToolCallParser(name: string): TextToolCallParser {

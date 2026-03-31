@@ -1,0 +1,86 @@
+/**
+ * GLM 4.7 tool call parser.
+ *
+ * Same as GLM 4.5 but with updated regex patterns that handle newlines
+ * between arg_key and arg_value tags and optional arg_key content.
+ *
+ * Ported from hermes-agent/environments/tool_call_parsers/glm47_parser.py
+ */
+
+import type { TextToolCallParser, ParseResult, TextParsedToolCall } from "./types.js";
+
+let idCounter = 0;
+function generateId(): string {
+  return `call_text_${Date.now().toString(36)}_${(idCounter++).toString(36)}`;
+}
+
+const FUNC_CALL_RE = /<tool_call>[\s\S]*?<\/tool_call>/g;
+// GLM 4.7: function name comes first, then optional arg_key pairs
+const FUNC_DETAIL_RE = /<tool_call>([\s\S]*?)(<arg_key>[\s\S]*?)?<\/tool_call>/;
+// GLM 4.7: handles literal \n or whitespace between tags
+const FUNC_ARG_RE = /<arg_key>([\s\S]*?)<\/arg_key>(?:\\n|\s)*<arg_value>([\s\S]*?)<\/arg_value>/g;
+
+function deserializeValue(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+export class Glm47ToolCallParser implements TextToolCallParser {
+  parse(text: string): ParseResult {
+    if (!text.includes("<tool_call>")) {
+      return { content: text, toolCalls: null };
+    }
+
+    try {
+      FUNC_CALL_RE.lastIndex = 0;
+      const matched = text.match(FUNC_CALL_RE);
+      if (!matched || matched.length === 0) {
+        return { content: text, toolCalls: null };
+      }
+
+      const toolCalls: TextParsedToolCall[] = [];
+
+      for (const block of matched) {
+        const detail = FUNC_DETAIL_RE.exec(block);
+        if (!detail) {
+          continue;
+        }
+
+        const funcName = detail[1].trim();
+        const argsSection = detail[2] ?? "";
+
+        const argDict: Record<string, unknown> = {};
+        FUNC_ARG_RE.lastIndex = 0;
+        let argMatch: RegExpExecArray | null;
+        while ((argMatch = FUNC_ARG_RE.exec(argsSection)) !== null) {
+          const key = argMatch[1].trim();
+          const val = deserializeValue(argMatch[2].trim());
+          argDict[key] = val;
+        }
+
+        if (!funcName) {
+          continue;
+        }
+
+        toolCalls.push({
+          id: generateId(),
+          name: funcName,
+          arguments: JSON.stringify(argDict),
+        });
+      }
+
+      if (toolCalls.length === 0) {
+        return { content: text, toolCalls: null };
+      }
+
+      const contentEnd = text.indexOf("<tool_call>");
+      const content = contentEnd > 0 ? text.slice(0, contentEnd).trim() : null;
+      return { content: content || null, toolCalls };
+    } catch {
+      return { content: text, toolCalls: null };
+    }
+  }
+}
