@@ -66,6 +66,7 @@ import { runContextEngineMaintenance } from "./context-engine-maintenance.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { resolveModelAsync } from "./model.js";
+import { evaluateProactiveCompaction } from "./proactive-compaction.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
 import { createEmbeddedRunAuthController } from "./run/auth-controller.js";
 import { createFailoverDecisionLogger } from "./run/failover-observation.js";
@@ -311,6 +312,9 @@ export async function runEmbeddedPiAgent(
       let runLoopIterations = 0;
       let overloadFailoverAttempts = 0;
       let timeoutCompactionAttempts = 0;
+      let proactiveCompactionPromptTokens: number | null = null;
+      const MAX_PROACTIVE_COMPACTION_ATTEMPTS = 2;
+      let proactiveCompactionAttempts = 0;
       const maybeMarkAuthProfileFailure = async (failure: {
         profileId?: string;
         reason?: AuthProfileFailureReason | null;
@@ -616,6 +620,102 @@ export async function runEmbeddedPiAgent(
               `live session model switch detected after failed attempt for ${params.sessionId}: ${provider}/${modelId} -> ${persistedSelection.provider}/${persistedSelection.model}`,
             );
             throw new LiveSessionModelSwitchError(persistedSelection);
+          }
+
+          // ── Proactive compaction ────────────────────────────────────────
+          // After a successful (non-error) attempt, check if prompt tokens
+          // have crossed the proactive threshold. If so, compact before the
+          // next user message to avoid overflow on the next turn.
+          if (!failedOrAbortedAttempt && !timedOut) {
+            const proactiveThreshold =
+              params.config?.agents?.defaults?.compaction?.proactiveThreshold;
+            const lastTurnPromptTokens = derivePromptTokens(lastRunPromptUsage);
+            const proactiveCheck = evaluateProactiveCompaction({
+              promptTokens: lastTurnPromptTokens,
+              contextWindowTokens: ctxInfo.tokens,
+              threshold: proactiveThreshold,
+              lastCompactionPromptTokens: proactiveCompactionPromptTokens,
+            });
+            if (
+              proactiveCheck.shouldCompact &&
+              proactiveCompactionAttempts < MAX_PROACTIVE_COMPACTION_ATTEMPTS
+            ) {
+              proactiveCompactionAttempts++;
+              const proactiveDiagId = createCompactionDiagId();
+              log.info(
+                `[proactive-compaction] triggering compaction at ${Math.round(proactiveCheck.ratio * 100)}% context usage ` +
+                  `(attempt ${proactiveCompactionAttempts}/${MAX_PROACTIVE_COMPACTION_ATTEMPTS}) diagId=${proactiveDiagId}`,
+              );
+              let proactiveCompactResult: Awaited<ReturnType<typeof contextEngine.compact>>;
+              await runOwnsCompactionBeforeHook("proactive threshold");
+              try {
+                const proactiveRuntimeContext = {
+                  ...buildEmbeddedCompactionRuntimeContext({
+                    sessionKey: params.sessionKey,
+                    messageChannel: params.messageChannel,
+                    messageProvider: params.messageProvider,
+                    agentAccountId: params.agentAccountId,
+                    currentChannelId: params.currentChannelId,
+                    currentThreadTs: params.currentThreadTs,
+                    currentMessageId: params.currentMessageId,
+                    authProfileId: lastProfileId,
+                    workspaceDir: resolvedWorkspace,
+                    agentDir,
+                    config: params.config,
+                    skillsSnapshot: params.skillsSnapshot,
+                    senderIsOwner: params.senderIsOwner,
+                    senderId: params.senderId,
+                    provider,
+                    modelId,
+                    thinkLevel,
+                    reasoningLevel: params.reasoningLevel,
+                    bashElevated: params.bashElevated,
+                    extraSystemPrompt: params.extraSystemPrompt,
+                    ownerNumbers: params.ownerNumbers,
+                  }),
+                  runId: params.runId,
+                  trigger: "proactive_threshold",
+                  diagId: proactiveDiagId,
+                  attempt: proactiveCompactionAttempts,
+                  maxAttempts: MAX_PROACTIVE_COMPACTION_ATTEMPTS,
+                };
+                proactiveCompactResult = await contextEngine.compact({
+                  sessionId: params.sessionId,
+                  sessionKey: params.sessionKey,
+                  sessionFile: params.sessionFile,
+                  tokenBudget: ctxInfo.tokens,
+                  force: false,
+                  compactionTarget: "threshold",
+                  runtimeContext: proactiveRuntimeContext,
+                });
+              } catch (compactErr) {
+                log.warn(
+                  `[proactive-compaction] contextEngine.compact() threw: ${String(compactErr)}`,
+                );
+                proactiveCompactResult = {
+                  ok: false,
+                  compacted: false,
+                  reason: String(compactErr),
+                };
+              }
+              await runOwnsCompactionAfterHook("proactive threshold", proactiveCompactResult);
+              if (proactiveCompactResult.compacted) {
+                autoCompactionCount += 1;
+                proactiveCompactionPromptTokens = lastTurnPromptTokens;
+                if (contextEngine.info.ownsCompaction === true) {
+                  await runPostCompactionSideEffects({
+                    config: params.config,
+                    sessionKey: params.sessionKey,
+                    sessionFile: params.sessionFile,
+                  });
+                }
+                log.info(`[proactive-compaction] compaction succeeded for ${provider}/${modelId}`);
+              } else {
+                log.info(
+                  `[proactive-compaction] compaction skipped or no reduction: ${proactiveCompactResult.reason ?? "unknown"}`,
+                );
+              }
+            }
           }
 
           // ── Timeout-triggered compaction ──────────────────────────────────
