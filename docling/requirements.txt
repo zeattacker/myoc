@@ -1,7 +1,0 @@
-torch>=2.6
-docling>=2.15
-fastapi>=0.115
-uvicorn[standard]>=0.34
-python-multipart>=0.0.18
-opencv-python-headless
-easyocr
