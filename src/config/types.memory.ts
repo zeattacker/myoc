@@ -33,6 +33,7 @@ export type MemoryQmdConfig = {
   mcporter?: MemoryQmdMcporterConfig;
   daemon?: MemoryQmdDaemonConfig;
   searchMode?: MemoryQmdSearchMode;
+  searchTool?: string;
   includeDefaultMemory?: boolean;
   paths?: MemoryQmdIndexPath[];
   sessions?: MemoryQmdSessionConfig;

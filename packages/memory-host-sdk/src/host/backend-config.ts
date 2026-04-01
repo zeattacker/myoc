@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { resolveAgentWorkspaceDir } from "../../../../src/agents/agent-scope.js";
 import { parseDurationMs } from "../../../../src/cli/parse-duration.js";
@@ -12,6 +13,7 @@ import type {
   MemoryQmdMcporterConfig,
   MemoryQmdSearchMode,
 } from "../../../../src/config/types.memory.js";
+import { normalizeAgentId } from "../../../../src/routing/session-key.js";
 import { resolveUserPath } from "../../../../src/utils.js";
 import { splitShellArgs } from "../../../../src/utils/shell-argv.js";
 
@@ -71,6 +73,7 @@ export type ResolvedQmdConfig = {
   mcporter: ResolvedQmdMcporterConfig;
   daemon: ResolvedQmdDaemonConfig;
   searchMode: MemoryQmdSearchMode;
+  searchTool?: string;
   collections: ResolvedQmdCollection[];
   sessions: ResolvedQmdSessionConfig;
   update: ResolvedQmdUpdateConfig;
@@ -147,6 +150,33 @@ function sanitizeName(input: string): string {
 
 function scopeCollectionBase(base: string, agentId: string): string {
   return `${base}-${sanitizeName(agentId)}`;
+}
+
+function canonicalizePathForContainment(rawPath: string): string {
+  const resolved = path.resolve(rawPath);
+  let current = resolved;
+  const suffix: string[] = [];
+  while (true) {
+    try {
+      const canonical = path.normalize(fs.realpathSync.native(current));
+      return path.normalize(path.join(canonical, ...suffix));
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return path.normalize(resolved);
+      }
+      suffix.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
+  const relative = path.relative(
+    canonicalizePathForContainment(rootPath),
+    canonicalizePathForContainment(candidatePath),
+  );
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function ensureUniqueName(base: string, existing: Set<string>): string {
@@ -237,6 +267,11 @@ function resolveSearchMode(raw?: MemoryQmdConfig["searchMode"]): MemoryQmdSearch
   return DEFAULT_QMD_SEARCH_MODE;
 }
 
+function resolveSearchTool(raw?: MemoryQmdConfig["searchTool"]): string | undefined {
+  const value = raw?.trim();
+  return value ? value : undefined;
+}
+
 function resolveSessionConfig(
   cfg: MemoryQmdConfig["sessions"],
   workspaceDir: string,
@@ -263,6 +298,7 @@ function resolveCustomPaths(
     return [];
   }
   const collections: ResolvedQmdCollection[] = [];
+  const seenRoots = new Set<string>();
   rawPaths.forEach((entry, index) => {
     const trimmedPath = entry?.path?.trim();
     if (!trimmedPath) {
@@ -275,7 +311,16 @@ function resolveCustomPaths(
       return;
     }
     const pattern = entry.pattern?.trim() || "**/*.md";
-    const baseName = scopeCollectionBase(entry.name?.trim() || `custom-${index + 1}`, agentId);
+    const dedupeKey = `${resolved}\u0000${pattern}`;
+    if (seenRoots.has(dedupeKey)) {
+      return;
+    }
+    seenRoots.add(dedupeKey);
+    const explicitName = entry.name?.trim();
+    const baseName =
+      explicitName && !isPathInsideRoot(resolved, workspaceDir)
+        ? explicitName
+        : scopeCollectionBase(explicitName || `custom-${index + 1}`, agentId);
     const name = ensureUniqueName(baseName, existing);
     collections.push({
       name,
@@ -334,19 +379,48 @@ export function resolveMemoryBackendConfig(params: {
   cfg: OpenClawConfig;
   agentId: string;
 }): ResolvedMemoryBackendConfig {
+  const normalizedAgentId = normalizeAgentId(params.agentId);
   const backend = params.cfg.memory?.backend ?? DEFAULT_BACKEND;
   const citations = params.cfg.memory?.citations ?? DEFAULT_CITATIONS;
   if (backend !== "qmd") {
     return { backend: "builtin", citations };
   }
 
-  const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.agentId);
+  const workspaceDir = resolveAgentWorkspaceDir(params.cfg, normalizedAgentId);
   const qmdCfg = params.cfg.memory?.qmd;
   const includeDefaultMemory = qmdCfg?.includeDefaultMemory !== false;
   const nameSet = new Set<string>();
+  const agentEntry = params.cfg.agents?.list?.find(
+    (entry) => normalizeAgentId(entry?.id) === normalizedAgentId,
+  );
+  const mergedExtraPaths = [
+    ...(params.cfg.agents?.defaults?.memorySearch?.extraPaths ?? []),
+    ...(agentEntry?.memorySearch?.extraPaths ?? []),
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const dedupedExtraPaths = Array.from(new Set(mergedExtraPaths));
+  const searchExtraPaths = dedupedExtraPaths.map(
+    (pathValue): { path: string; pattern?: string; name?: string } => ({ path: pathValue }),
+  );
+  const mergedExtraCollections = [
+    ...(params.cfg.agents?.defaults?.memorySearch?.qmd?.extraCollections ?? []),
+    ...(agentEntry?.memorySearch?.qmd?.extraCollections ?? []),
+  ].filter((value): value is MemoryQmdIndexPath =>
+    Boolean(value && typeof value === "object" && typeof value.path === "string"),
+  );
+
+  // Combine QMD-specific paths with extraPaths and per-agent cross-agent collections.
+  const allQmdPaths: MemoryQmdIndexPath[] = [
+    ...(qmdCfg?.paths ?? []),
+    ...searchExtraPaths,
+    ...mergedExtraCollections,
+  ];
+
   const collections = [
-    ...resolveDefaultCollections(includeDefaultMemory, workspaceDir, nameSet, params.agentId),
-    ...resolveCustomPaths(qmdCfg?.paths, workspaceDir, nameSet, params.agentId),
+    ...resolveDefaultCollections(includeDefaultMemory, workspaceDir, nameSet, normalizedAgentId),
+    ...resolveCustomPaths(allQmdPaths, workspaceDir, nameSet, normalizedAgentId),
   ];
 
   const rawCommand = qmdCfg?.command?.trim() || "qmd";
@@ -357,6 +431,7 @@ export function resolveMemoryBackendConfig(params: {
     mcporter: resolveMcporterConfig(qmdCfg?.mcporter),
     daemon: resolveDaemonConfig(qmdCfg?.daemon),
     searchMode: resolveSearchMode(qmdCfg?.searchMode),
+    searchTool: resolveSearchTool(qmdCfg?.searchTool),
     collections,
     includeDefaultMemory,
     sessions: resolveSessionConfig(qmdCfg?.sessions, workspaceDir),
